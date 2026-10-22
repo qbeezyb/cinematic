@@ -38,6 +38,17 @@ neoForge {
     }
 }
 
+// Optional real-client UI fixtures are compiled only for this run and never enter release jars.
+if (providers.gradleProperty('verifyUi').isPresent()) {
+    def uiVerification = sourceSets.create('uiVerification') {
+        java.srcDirs = ['tests/client']
+        compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+        runtimeClasspath += sourceSets.main.output + sourceSets.main.runtimeClasspath
+    }
+    neoForge.mods.cinematic.sourceSet(uiVerification)
+    neoForge.runs.client.gameDirectory = file('run-ui-verification')
+}
+
 configurations {
     javacvJava
     javacppJava

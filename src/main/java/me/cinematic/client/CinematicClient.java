@@ -32,8 +32,16 @@ public final class CinematicClient {
         event.register(Payloads.Access.TYPE, (packet, context) -> PLAYBACK.access(packet));
         event.register(Payloads.Clock.TYPE, (packet, context) -> PLAYBACK.clock(packet));
         event.register(Payloads.Open.TYPE, (packet, context) -> {
-            PLAYBACK.retry(packet.screen());
-            Minecraft.getInstance().gui.setScreen(new CinemaScreen(packet.screen()));
+            PLAYBACK.remote.open(packet.initial());
+            Minecraft.getInstance().gui.setScreen(packet.initial() == null ? new ScreenPickerScreen(null) : new CinemaScreen(packet.initial().id()));
+        });
+        event.register(Payloads.ScreenList.TYPE, (packet, context) -> {
+            if (Minecraft.getInstance().gui.screen() instanceof ScreenPickerScreen screen) { screen.screens(packet); }
+        });
+        event.register(Payloads.ScreenState.TYPE, (packet, context) -> {
+            var current = Minecraft.getInstance().gui.screen();
+            if (current instanceof CinemaScreen screen) { screen.remoteState(packet); }
+            else if (current instanceof ScreenPickerScreen screen) { screen.selected(packet); }
         });
         event.register(Payloads.AudioTracks.TYPE, (packet, context) -> {
             if (Minecraft.getInstance().gui.screen() instanceof CinemaScreen screen) { screen.audioTracks(packet); }

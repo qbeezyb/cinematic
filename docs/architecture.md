@@ -4,7 +4,7 @@
 
 `Cinematic` registers the controller block and item, Remote, creative tab, block entity, media sound event, configuration, payloads, and GameTest functions. `CinematicClient` is a physical-client entry point; server initialization has no client renderer, OpenGL, or sound-engine references. Headless JavaCV probing does not instantiate AWT or an audio device.
 
-`CinemaServer` owns sessions on the Minecraft server thread. A `ScreenKey` combines dimension and block coordinates; each rectangular panel has a UUID shared by its member blocks. A session's immutable `Timeline` records duration, position, monotonic anchor, playing, and looping. Every mutation advances its revision. Possession of a Remote in either hand, dimension, distance to the entire physical wall, current controller existence, revision, and action-specific bounds are checked before mutation. Requests are capped at twenty per player per second.
+`CinemaServer` owns sessions on the Minecraft server thread. A `ScreenKey` combines dimension and block coordinates; each rectangular panel has a UUID shared by its member blocks. A session's immutable `Timeline` records duration, position, monotonic anchor, playing, and looping. Every mutation advances its revision. Possession of a Remote in either hand, valid screen identity, current revision, and action-specific bounds are checked before mutation and protected library/audio metadata access. Controls work server-wide across dimensions. Physical checks use the screen’s dimension and inspect only loaded chunks; persisted sessions in unloaded chunks remain controllable without loading those chunks. Loaded missing anchors trigger wall reconciliation and removed identities are rejected. Requests are capped at twenty per player per second.
 
 `ScreenLayout` partitions coplanar, equally facing, edge-connected blocks into filled rectangles, each at most 40×40. The deterministic partition starts at the lowest row and extends complete rows; holes never produce phantom pixels or blocks. A bounded flood fill inspects at most 6,400 blocks per connected component; larger components defer grouping until split. Discovery waits for adjacent chunks to be available rather than loading them or splitting a partly unloaded wall. Pending changes retry on server ticks. After one successful wall scan, member block-entity loads reuse that result.
 
@@ -24,20 +24,28 @@ Singleplayer binds loopback on an ephemeral port. Dedicated servers use configur
 
 ## Connection protocol
 
-NeoForge payload identifiers carry a `v2` suffix and the registrar requires matching protocol version `2`. Codecs bound strings, lists, and enum values. Client handlers are registered from the client entry point.
+NeoForge payload identifiers carry a `v3` suffix and the registrar requires matching protocol version `3`. Codecs bound strings, lists, and enum values. Client handlers are registered from the client entry point.
 
 | Payload | Direction | Role |
 | --- | --- | --- |
-| Request | Client → server | Library search/page, audio-track metadata for the opened screen/media, media lease, clock sample |
+| Request | Client → server | Library search/page, audio-track metadata, screen search/page, target selection/refresh, media lease, clock sample |
 | Control | Client → server | Screen UUID, expected revision, action and validated parameters |
 | Snapshots | Server → client | Complete nearest set, timeline anchor, media metadata, dimensions and revision |
 | Library | Server → client | Twenty bounded entries; echoes request identity so stale searches are ignored |
 | AudioTracks | Server → client | Up to 64 bounded tracks; echoes screen, media and request identity so stale results are ignored |
 | Access | Server → client | Advertised base URL, renewable bearer token and expiry, or actionable service error |
 | Clock | Server → client | Echoed client send time and monotonic server time |
-| Open / Notice | Server → client | Open controller UI or report a rejected action |
+| ScreenList | Server → client | At most 20 screen metadata snapshots with request identity, offset, total and error status |
+| ScreenState | Server → client | Request-correlated individual target metadata or missing/error status |
+| Open / Notice | Server → client | Open with initial target metadata (null means picker), or report a rejected action |
 
 Each second the server sends at most 64 nearest snapshots within 256 blocks in the same dimension. Updates also follow controls. The client rejects older per-screen revisions. Lowest-round-trip midpoint samples estimate the clock offset; local timelines advance between snapshots. Snapshots carry the timeline’s base position and actual anchor, including future anchors. Play/resume, playing seeks, and playing track changes schedule the anchor 1.5 seconds ahead; position remains fixed until then. Paused seeks remain paused and stop cancels preparation. Late/buffering clients recover individually. Natural loop wraps seek locally without adding a scheduled pause.
+
+`RemoteItem` consumes block interactions before another block menu can open and consumes air use through the item API. Direct Screen Block use selects that panel; other uses resolve the remembered UUID. The UUID lives under `PlayerPersisted` in player NBT, which NeoForge saves and copies on respawn. Session storage remains version 2.
+
+`RemoteTarget` holds one snapshot independently of nearby `ClientPlayback.Entry` instances. Opening distant controls allocates no playback entry, decoder, sound or texture. The UI chooses the newest local/remote state and uses local decoder status when available, otherwise shared playing/paused/preparing/error status. One-second refreshes and immediate refresh after controls are scoped to the current UI and Remote possession. Closing, switching, or putting away the item invalidates outstanding responses. Target and picker responses echo unique request IDs; superseded responses and older revisions are ignored. Picker search is debounced, pages use stable dimension/coordinate/UUID order, and native widgets supply focus, keyboard navigation, narration and tooltips.
+
+Playback controls use a 230-pixel panel. Elapsed/proposed and total timestamps occupy a separate row above the text-free seek slider. Narration retains the seek position, arrows use one-second steps, and seeks debounce for 250 ms and wait for drag release.
 
 ## Playback and lifetime
 

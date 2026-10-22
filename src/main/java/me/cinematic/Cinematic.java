@@ -3,6 +3,7 @@ package me.cinematic;
 import me.cinematic.block.ScreenBlockEntity;
 import me.cinematic.block.ScreenControllerBlock;
 import me.cinematic.network.CinemaNetwork;
+import me.cinematic.item.RemoteItem;
 import me.cinematic.server.CinemaServer;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
@@ -11,7 +12,6 @@ import net.minecraft.sounds.SoundEvent;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.CreativeModeTab;
 import net.minecraft.world.item.CreativeModeTabs;
-import net.minecraft.world.item.Item;
 import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.material.MapColor;
 import net.neoforged.bus.api.IEventBus;
@@ -39,7 +39,7 @@ public final class Cinematic {
     public static final DeferredBlock<ScreenControllerBlock> CONTROLLER = BLOCKS.registerBlock(
             "screen_controller", ScreenControllerBlock::new, p -> p.mapColor(MapColor.COLOR_BLACK).strength(2).noOcclusion());
     public static final DeferredItem<BlockItem> CONTROLLER_ITEM = ITEMS.registerSimpleBlockItem(CONTROLLER);
-    public static final DeferredItem<Item> REMOTE = ITEMS.registerSimpleItem("remote", p -> p.stacksTo(1));
+    public static final DeferredItem<RemoteItem> REMOTE = ITEMS.registerItem("remote", RemoteItem::new, p -> p.stacksTo(1));
     public static final DeferredHolder<BlockEntityType<?>, BlockEntityType<ScreenBlockEntity>> SCREEN_ENTITY = BLOCK_ENTITIES.register(
             "screen_controller", () -> new BlockEntityType<>(ScreenBlockEntity::new, CONTROLLER.get()));
     public static final DeferredHolder<CreativeModeTab, CreativeModeTab> TAB = TABS.register("cinematic", () -> CreativeModeTab.builder()
@@ -61,5 +61,6 @@ public final class Cinematic {
         container.registerConfig(ModConfig.Type.LOCAL, CinemaConfig.SPEC);
         bus.addListener(CinemaNetwork::register);
         CinemaServer.register(NeoForge.EVENT_BUS);
+        NeoForge.EVENT_BUS.addListener(RemoteItem::useBlock);
     }
 }

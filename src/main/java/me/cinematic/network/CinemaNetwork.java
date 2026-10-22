@@ -7,7 +7,7 @@ import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
 /** Common registration contains no references to client classes, including handler lambdas. */
 public final class CinemaNetwork {
     public static void register(RegisterPayloadHandlersEvent event) {
-        var registrar = event.registrar("2");
+        var registrar = event.registrar("3");
         registrar.playToServer(Payloads.Request.TYPE, Payloads.Request.CODEC, (packet, context) -> {
             if (context.player() instanceof ServerPlayer player) {
                 var server = CinemaServer.get(player.level().getServer());
@@ -20,6 +20,8 @@ public final class CinemaNetwork {
                 if (server != null) { server.control(player, packet); }
             }
         });
+        registrar.playToClient(Payloads.ScreenList.TYPE, Payloads.ScreenList.CODEC);
+        registrar.playToClient(Payloads.ScreenState.TYPE, Payloads.ScreenState.CODEC);
         registrar.playToClient(Payloads.Snapshots.TYPE, Payloads.Snapshots.CODEC);
         registrar.playToClient(Payloads.AudioTracks.TYPE, Payloads.AudioTracks.CODEC);
         registrar.playToClient(Payloads.Library.TYPE, Payloads.Library.CODEC);

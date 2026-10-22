@@ -33,6 +33,10 @@ public final class CinemaGameTests {
         FUNCTIONS.register("persistence", () -> CinemaGameTests::persistence);
         FUNCTIONS.register("audio_tracks", () -> CinemaGameTests::audioTracks);
         FUNCTIONS.register("unauthorized_controls", () -> CinemaGameTests::unauthorizedControls);
+        FUNCTIONS.register("global_remote", () -> CinemaGameTests::globalRemote);
+        FUNCTIONS.register("remote_picker", () -> CinemaGameTests::remotePicker);
+        FUNCTIONS.register("unloaded_remote", () -> CinemaGameTests::unloadedRemote);
+        FUNCTIONS.register("remote_item", () -> CinemaGameTests::remoteItem);
     }
 
     private static void registration(GameTestHelper helper) {
@@ -183,7 +187,8 @@ public final class CinemaGameTests {
         helper.assertTrue(rejected(() -> service.applyControl(player, audio)), "Stale audio selection rejected");
         player.setPos(pos.getX() + 18, pos.getY(), pos.getZ());
         var distant = new Payloads.Control(screen.id(), screen.revision(), Payloads.Action.LOOP, "", 0, 0, 0);
-        helper.assertTrue(rejected(() -> service.applyControl(player, distant)) && screen.timeline().looping(), "Distant controls do not mutate the screen");
+        service.applyControl(player, distant);
+        helper.assertTrue(!screen.timeline().looping(), "Distant controls mutate the shared screen");
         player.setPos(pos.getX() + .5, pos.getY() + .5, pos.getZ() + .5);
         var unavailable = new Payloads.Control(screen.id(), screen.revision(), Payloads.Action.AUDIO_TRACK, "a".repeat(32), 999, 0, 0);
         helper.assertTrue(rejected(() -> service.applyControl(player, unavailable)), "Unindexed media and audio tracks rejected");
@@ -226,10 +231,138 @@ public final class CinemaGameTests {
             helper.assertTrue(rejected(() -> service.applyControl(player, wrongMedia)), "Audio selection must match indexed media");
             player.setPos(pos.getX() + 20, pos.getY(), pos.getZ());
             var distant = new Payloads.Control(screen.id(), screen.revision(), Payloads.Action.AUDIO_TRACK, media, 1, 0, 0);
-            helper.assertTrue(rejected(() -> service.applyControl(player, distant)), "Distant audio switch rejected");
+            service.applyControl(player, distant);
+            helper.assertTrue(screen.audioStream() == 1, "Distant audio switch succeeds");
             player.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
-            helper.assertTrue(screen.audioStream() == 2, "Rejected controls preserve shared audio");
+            helper.assertTrue(rejected(() -> service.applyControl(player, new Payloads.Control(screen.id(), screen.revision(), Payloads.Action.AUDIO_TRACK, media, 2, 0, 0))), "Missing Remote rejects audio switch");
+            helper.assertTrue(screen.audioStream() == 1, "Rejected controls preserve shared audio");
         }).thenSucceed();
+    }
+
+    private static void globalRemote(GameTestHelper helper) {
+        var relative = new BlockPos(1, 1, 1);
+        helper.setBlock(relative, Cinematic.CONTROLLER.get());
+        var level = helper.getLevel(); var pos = helper.absolutePos(relative);
+        var service = CinemaServer.get(level.getServer());
+        var screen = service.ensure(level, pos, level.getBlockState(pos));
+        var other = level.getServer().getLevel(net.minecraft.world.level.Level.NETHER);
+        helper.assertTrue(other != null && other != level, "A second dimension is available");
+        var player = FakePlayerFactory.getMinecraft(other);
+        player.setPos(pos.getX() + 50_000, 80, pos.getZ() + 50_000);
+        player.setItemInHand(InteractionHand.MAIN_HAND, Cinematic.REMOTE.get().getDefaultInstance());
+        player.setItemInHand(InteractionHand.OFF_HAND, ItemStack.EMPTY);
+        service.applyControl(player, new Payloads.Control(screen.id(), screen.revision(), Payloads.Action.LOOP, "", 1, 0, 0));
+        helper.assertTrue(screen.timeline().looping(), "Controls look up the screen in its dimension, independent of player location");
+        service.selectTarget(player, screen.id());
+        helper.assertTrue(CinemaServer.remembered(player).equals(screen.id()), "Target selection persists in player data");
+        try {
+            var bytes = new java.io.ByteArrayOutputStream();
+            net.minecraft.nbt.NbtIo.write(player.getPersistentData(), new java.io.DataOutputStream(bytes));
+            var saved = net.minecraft.nbt.NbtIo.read(new java.io.DataInputStream(new java.io.ByteArrayInputStream(bytes.toByteArray())));
+            player.getPersistentData().remove(net.minecraft.world.entity.player.Player.PERSISTED_NBT_TAG);
+            player.getPersistentData().merge(saved);
+            helper.assertTrue(CinemaServer.remembered(player).equals(screen.id()), "Remembered target survives serialized player NBT");
+        } catch (IOException e) { throw new IllegalStateException(e); }
+        var clone = FakePlayerFactory.get(other, new com.mojang.authlib.GameProfile(java.util.UUID.randomUUID(), "CinematicClone"));
+        clone.restoreFrom(player, false);
+        helper.assertTrue(CinemaServer.remembered(clone).equals(screen.id()), "Remembered target survives respawn cloning");
+        player.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+        helper.assertTrue(rejected(() -> service.selectTarget(player, screen.id())), "Selection requires a Remote");
+        player.setItemInHand(InteractionHand.OFF_HAND, Cinematic.REMOTE.get().getDefaultInstance());
+        helper.assertTrue(rejected(() -> service.selectTarget(player, java.util.UUID.randomUUID())), "Invalid identities are rejected");
+        helper.setBlock(relative, net.minecraft.world.level.block.Blocks.AIR);
+        helper.assertTrue(rejected(() -> service.resolveScreen(screen.id())), "Removed target rejects lookup");
+        player.setItemInHand(InteractionHand.OFF_HAND, ItemStack.EMPTY);
+        helper.succeed();
+    }
+
+    private static void remotePicker(GameTestHelper helper) {
+        var level = helper.getLevel(); var service = CinemaServer.get(level.getServer());
+        var player = FakePlayerFactory.getMinecraft(level);
+        player.setItemInHand(InteractionHand.MAIN_HAND, Cinematic.REMOTE.get().getDefaultInstance());
+        var ids = new java.util.HashSet<java.util.UUID>();
+        for (int i = 0; i < 23; i++) {
+            var relative = new BlockPos(1, 4 + i * 2, 1);
+            helper.setBlock(relative, Cinematic.CONTROLLER.get());
+            var pos = helper.absolutePos(relative);
+            ids.add(service.ensure(level, pos, level.getBlockState(pos)).id());
+        }
+        String query = level.dimension().identifier().toString();
+        var first = service.screenList(player, 100, 0, query);
+        var second = service.screenList(player, 101, 20, query);
+        helper.assertTrue(first.requestId() == 100 && first.offset() == 0 && first.screens().size() == 20, "First page is bounded and correlated");
+        helper.assertTrue(second.requestId() == 101 && second.offset() == 20 && second.total() == first.total(), "Next page retains total and correlation");
+        var firstIds = first.screens().stream().map(Payloads.Snapshot::id).collect(java.util.stream.Collectors.toSet());
+        helper.assertTrue(second.screens().stream().noneMatch(s -> firstIds.contains(s.id())), "Pages do not overlap");
+        helper.assertTrue(service.screenList(player, 102, 0, "no-such-screen-xyz").total() == 0, "Unmatched searches return an empty page");
+        helper.assertTrue(service.screenList(player, 103, Integer.MAX_VALUE, query).screens().isEmpty(), "Out-of-range pages are empty");
+        helper.assertTrue(rejected(() -> service.screenList(player, 104, -1, query)), "Negative offsets are rejected");
+        player.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+        helper.assertTrue(rejected(() -> service.screenList(player, 105, 0, query)), "Listing requires a Remote");
+        helper.succeed();
+    }
+
+    /** Simulate the persisted session map before its remote chunk has loaded. */
+    @SuppressWarnings("unchecked")
+    private static void unloadedRemote(GameTestHelper helper) {
+        var level = helper.getLevel(); var service = CinemaServer.get(level.getServer());
+        var key = new me.cinematic.core.ScreenKey(level.dimension().identifier().toString(), 20_000_000, 80, 20_000_000);
+        var anchor = new BlockPos(key.x(), key.y(), key.z());
+        helper.assertTrue(!level.hasChunkAt(anchor), "Remote chunk starts unloaded");
+        var screen = new me.cinematic.core.ScreenSession(java.util.UUID.randomUUID(), key, 0);
+        screen.select("a".repeat(32), 7_200_000, 0);
+        java.util.Map<java.util.UUID, me.cinematic.core.ScreenSession> sessions;
+        try {
+            var field = CinemaServer.class.getDeclaredField("screens"); field.setAccessible(true);
+            sessions = (java.util.Map<java.util.UUID, me.cinematic.core.ScreenSession>) field.get(service);
+        } catch (ReflectiveOperationException e) { throw new IllegalStateException(e); }
+        sessions.put(screen.id(), screen);
+        try {
+            var player = FakePlayerFactory.getMinecraft(level);
+            player.setItemInHand(InteractionHand.MAIN_HAND, Cinematic.REMOTE.get().getDefaultInstance());
+            service.selectTarget(player, screen.id());
+            service.applyControl(player, new Payloads.Control(screen.id(), screen.revision(), Payloads.Action.SEEK, "", 3_600_000, 0, 0));
+            service.applyControl(player, new Payloads.Control(screen.id(), screen.revision(), Payloads.Action.LOOP, "", 1, 0, 0));
+            helper.assertTrue(screen.timeline().positionAt(CinemaServer.now()) == 3_600_000 && screen.timeline().looping(), "Persisted unloaded sessions accept validated controls");
+            helper.assertTrue(!level.hasChunkAt(anchor), "Target selection and controls never load the chunk");
+            var invalid = new Payloads.Control(screen.id(), screen.revision(), Payloads.Action.SEEK, "", -1, 0, 0);
+            helper.assertTrue(rejected(() -> service.applyControl(player, invalid)), "Unloaded sessions still validate parameters");
+            player.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+        } finally { sessions.remove(screen.id()); }
+        helper.succeed();
+    }
+
+    private static void remoteItem(GameTestHelper helper) {
+        var level = helper.getLevel(); var service = CinemaServer.get(level.getServer());
+        var relative = new BlockPos(1, 1, 1); var pos = helper.absolutePos(relative);
+        helper.setBlock(relative, Cinematic.CONTROLLER.get());
+        var screen = service.ensure(level, pos, level.getBlockState(pos));
+        var player = FakePlayerFactory.get(level, new com.mojang.authlib.GameProfile(java.util.UUID.randomUUID(), "CinematicRemote"));
+        player.setPos(pos.getX() + .5, pos.getY() + .5, pos.getZ() + .5);
+        helper.assertTrue(CinemaServer.remembered(player).equals(Payloads.NO_SCREEN), "First-use Remote has no target");
+        player.setItemInHand(InteractionHand.OFF_HAND, Cinematic.REMOTE.get().getDefaultInstance());
+        helper.assertTrue(Cinematic.REMOTE.get().use(level, player, InteractionHand.OFF_HAND) == net.minecraft.world.InteractionResult.SUCCESS,
+                "First air use consumes the interaction and opens selection");
+        var hit = new net.minecraft.world.phys.BlockHitResult(net.minecraft.world.phys.Vec3.atCenterOf(pos), Direction.NORTH, pos, false);
+        var event = new net.neoforged.neoforge.event.entity.player.PlayerInteractEvent.RightClickBlock(player, InteractionHand.MAIN_HAND, pos, hit);
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(event);
+        helper.assertTrue(event.isCanceled() && event.getCancellationResult() == net.minecraft.world.InteractionResult.SUCCESS,
+                "Offhand Remote consumes the block interaction before block or item use repeats it");
+        helper.assertTrue(CinemaServer.remembered(player).equals(screen.id()), "Screen Block use targets that screen");
+        var other = pos.above(3);
+        var otherHit = new net.minecraft.world.phys.BlockHitResult(net.minecraft.world.phys.Vec3.atCenterOf(other), Direction.NORTH, other, false);
+        event = new net.neoforged.neoforge.event.entity.player.PlayerInteractEvent.RightClickBlock(player, InteractionHand.MAIN_HAND, other, otherHit);
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(event);
+        helper.assertTrue(event.isCanceled() && CinemaServer.remembered(player).equals(screen.id()), "Other blocks reopen the remembered target");
+        player.setItemInHand(InteractionHand.OFF_HAND, ItemStack.EMPTY);
+        player.setItemInHand(InteractionHand.MAIN_HAND, Cinematic.REMOTE.get().getDefaultInstance());
+        helper.assertTrue(Cinematic.REMOTE.get().use(level, player, InteractionHand.MAIN_HAND) == net.minecraft.world.InteractionResult.SUCCESS,
+                "Main-hand air use reopens the remembered target");
+        helper.setBlock(relative, net.minecraft.world.level.block.Blocks.AIR);
+        helper.assertTrue(Cinematic.REMOTE.get().use(level, player, InteractionHand.MAIN_HAND) == net.minecraft.world.InteractionResult.SUCCESS,
+                "Removed remembered screens reopen selection without throwing");
+        player.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+        helper.succeed();
     }
 
     private static boolean rejected(Runnable action) {

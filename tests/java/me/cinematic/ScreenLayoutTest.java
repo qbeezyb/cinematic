@@ -59,11 +59,11 @@ class ScreenLayoutTest {
         assertEquals(2, screen.revision());
     }
 
-    @Test void remotePermissionsApplyNearTheFarEdgeOfALargeWall() {
+    @Test void remotePermissionsRemainValidAfterLargeWallReshapes() {
         var screen = new ScreenSession(UUID.randomUUID(), new ScreenKey("minecraft:overworld", 0, 0, 0), 0);
         screen.reshape(screen.key(), 40, 40);
-        assertDoesNotThrow(() -> ControlPolicy.check(screen, "minecraft:overworld", 39.5, 39.5, 17, true, screen.revision()));
-        assertThrows(IllegalArgumentException.class, () -> ControlPolicy.check(screen, "minecraft:overworld", 39.5, 39.5, 17.01, true, screen.revision()));
+        assertDoesNotThrow(() -> ControlPolicy.check(screen, true, screen.revision()));
+        assertThrows(IllegalArgumentException.class, () -> ControlPolicy.check(screen, true, screen.revision() - 1));
     }
 
     private static Set<Cell> wall(int width, int height) {

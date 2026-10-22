@@ -35,6 +35,8 @@ import me.cinematic.network.Payloads;
 import net.minecraft.commands.Commands;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.resources.Identifier;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.core.registries.Registries;
@@ -275,7 +277,79 @@ public final class CinemaServer implements AutoCloseable {
         ScreenSession screen = ensure(level, pos, level.getBlockState(pos));
         sendNearby(player);
         sendAccess(player);
-        PacketDistributor.sendToPlayer(player, new Payloads.Open(screen.id()));
+        if (hasRemote(player)) { remember(player, screen.id()); }
+        PacketDistributor.sendToPlayer(player, new Payloads.Open(snapshot(screen)));
+    }
+
+    private static final String REMEMBERED_SCREEN = "cinematic:remote_screen";
+
+    public static UUID remembered(ServerPlayer player) {
+        String value = player.getPersistentData().getCompoundOrEmpty(Player.PERSISTED_NBT_TAG).getStringOr(REMEMBERED_SCREEN, "");
+        try { return UUID.fromString(value); }
+        catch (IllegalArgumentException e) { return Payloads.NO_SCREEN; }
+    }
+
+    private static void remember(ServerPlayer player, UUID screen) {
+        CompoundTag persisted = player.getPersistentData().getCompoundOrEmpty(Player.PERSISTED_NBT_TAG);
+        persisted.putString(REMEMBERED_SCREEN, screen.toString());
+        player.getPersistentData().put(Player.PERSISTED_NBT_TAG, persisted);
+    }
+
+    public void openRemote(ServerPlayer player) {
+        if (!hasRemote(player) || !allowRequest(player)) { return; }
+        Payloads.Snapshot initial = null;
+        try { initial = snapshot(resolveScreen(remembered(player))); }
+        catch (IllegalArgumentException ignored) { /* First use or a removed target opens selection. */ }
+        PacketDistributor.sendToPlayer(player, new Payloads.Open(initial));
+    }
+
+    public Payloads.Snapshot selectTarget(ServerPlayer player, UUID id) {
+        if (!hasRemote(player)) { throw new IllegalArgumentException("Hold a Cinematic Remote in either hand"); }
+        ScreenSession screen = resolveScreen(id);
+        remember(player, screen.id());
+        return snapshot(screen);
+    }
+
+    /** Checks physical state in the target dimension, without loading its chunks. */
+    public ScreenSession resolveScreen(UUID id) {
+        ScreenSession screen = screens.get(id);
+        if (screen == null) { throw new IllegalArgumentException("This screen no longer exists. Choose another screen."); }
+        var level = server.getLevel(ResourceKey.create(Registries.DIMENSION, Identifier.parse(screen.key().dimension())));
+        if (level == null) { throw new IllegalArgumentException("This screen's dimension is unavailable"); }
+        BlockPos anchor = pos(screen.key());
+        if (level.hasChunkAt(anchor)) {
+            BlockState state = level.getBlockState(anchor);
+            if (!state.is(Cinematic.CONTROLLER.get()) || state.getValue(ScreenControllerBlock.FACING).get2DDataValue() != screen.facing()) {
+                blocksChanged(level, anchor, screen.facing());
+                screen = screens.get(id);
+                if (screen == null || screen.key().equals(key(level, anchor))) {
+                    throw new IllegalArgumentException("This screen no longer exists. Choose another screen.");
+                }
+            }
+        }
+        return screen;
+    }
+
+    public Payloads.ScreenList screenList(ServerPlayer player, long requestId, int offset, String query) {
+        if (!hasRemote(player)) { throw new IllegalArgumentException("Hold a Cinematic Remote in either hand"); }
+        if (offset < 0) { throw new IllegalArgumentException("Invalid screen page"); }
+        String search = query.toLowerCase(Locale.ROOT);
+        var valid = new ArrayList<ScreenSession>();
+        for (var candidate : List.copyOf(screens.values())) {
+            try {
+                var screen = resolveScreen(candidate.id());
+                var state = snapshot(screen);
+                if (screenDetails(state).toLowerCase(Locale.ROOT).contains(search)) { valid.add(screen); }
+            } catch (IllegalArgumentException ignored) { /* Reconciled removed screens are omitted. */ }
+        }
+        valid.sort(Comparator.comparing((ScreenSession s) -> s.key().dimension()).thenComparingInt(s -> s.key().x())
+                .thenComparingInt(s -> s.key().y()).thenComparingInt(s -> s.key().z()).thenComparing(s -> s.id().toString()));
+        return new Payloads.ScreenList(requestId, offset, valid.size(), valid.stream().skip(offset).limit(20).map(this::snapshot).toList(), "");
+    }
+
+    private static String screenDetails(Payloads.Snapshot s) {
+        return s.key().dimension() + " " + s.key().x() + " " + s.key().y() + " " + s.key().z()
+                + " " + s.width() + " × " + s.height() + " " + s.name();
     }
 
     public void request(ServerPlayer player, Payloads.Request request) {
@@ -283,11 +357,30 @@ public final class CinemaServer implements AutoCloseable {
         switch (request.kind()) {
             case CLOCK -> PacketDistributor.sendToPlayer(player, new Payloads.Clock(request.sentAt(), now()));
             case ACCESS -> sendAccess(player);
+            case SCREENS -> {
+                try { PacketDistributor.sendToPlayer(player, screenList(player, request.sentAt(), request.offset(), request.query())); }
+                catch (IllegalArgumentException e) {
+                    PacketDistributor.sendToPlayer(player, new Payloads.ScreenList(request.sentAt(), Math.max(0, request.offset()), 0, List.of(), limited(e.getMessage())));
+                }
+            }
+            case TARGET, REFRESH -> {
+                try {
+                    if (!hasRemote(player)) { throw new IllegalArgumentException("Hold a Cinematic Remote in either hand"); }
+                    var state = request.kind() == Payloads.RequestKind.TARGET ? selectTarget(player, request.screen()) : snapshot(resolveScreen(request.screen()));
+                    PacketDistributor.sendToPlayer(player, new Payloads.ScreenState(state.id(), request.sentAt(), state, ""));
+                } catch (IllegalArgumentException e) {
+                    PacketDistributor.sendToPlayer(player, new Payloads.ScreenState(request.screen(), request.sentAt(), null, limited(e.getMessage())));
+                }
+            }
             case AUDIO_TRACKS -> {
                 ScreenSession screen = screens.get(request.screen());
-                if (screen == null) { notice(player, request.screen(), "This screen no longer exists"); return; }
+                if (screen == null) {
+                    PacketDistributor.sendToPlayer(player, new Payloads.AudioTracks(request.screen(), request.query(), request.sentAt(), List.of(), "This screen no longer exists"));
+                    return;
+                }
                 try {
-                    ControlPolicy.check(screen, player.level().dimension().identifier().toString(), player.getX(), player.getY(), player.getZ(), hasRemote(player), screen.revision());
+                    screen = resolveScreen(screen.id());
+                    ControlPolicy.check(screen, hasRemote(player), request.revision());
                     var entry = library == null ? null : library.get(screen.mediaId());
                     if (entry == null || !screen.mediaId().equals(request.query())) { throw new IllegalArgumentException("Media changed or unavailable. Reopen Audio."); }
                     PacketDistributor.sendToPlayer(player, new Payloads.AudioTracks(screen.id(), entry.id(), request.sentAt(), entry.audioTracks(), ""));
@@ -297,9 +390,13 @@ public final class CinemaServer implements AutoCloseable {
             }
             case LIBRARY -> {
                 ScreenSession screen = screens.get(request.screen());
-                if (screen == null) { notice(player, request.screen(), "This screen no longer exists"); return; }
+                if (screen == null) {
+                    PacketDistributor.sendToPlayer(player, new Payloads.Library(request.screen(), request.sentAt(), Math.max(0, request.offset()), 0, List.of(), "This screen no longer exists"));
+                    return;
+                }
                 try {
-                    ControlPolicy.check(screen, player.level().dimension().identifier().toString(), player.getX(), player.getY(), player.getZ(), hasRemote(player), screen.revision());
+                    screen = resolveScreen(screen.id());
+                    ControlPolicy.check(screen, hasRemote(player), request.revision());
                     if (request.offset() < 0 || request.offset() > 4096) { throw new IllegalArgumentException("Invalid media page"); }
                     if (library == null) { throw new IllegalArgumentException(mediaError); }
                     String query = request.query().toLowerCase(Locale.ROOT);
@@ -307,7 +404,9 @@ public final class CinemaServer implements AutoCloseable {
                     var page = matches.stream().skip(request.offset()).limit(20)
                             .map(entry -> new Payloads.LibraryItem(entry.id(), entry.name(), entry.durationMs(), entry.width() > 0)).toList();
                     PacketDistributor.sendToPlayer(player, new Payloads.Library(screen.id(), request.sentAt(), request.offset(), matches.size(), page, library.status()));
-                } catch (IllegalArgumentException e) { notice(player, screen.id(), e.getMessage()); }
+                } catch (IllegalArgumentException e) {
+                    PacketDistributor.sendToPlayer(player, new Payloads.Library(request.screen(), request.sentAt(), Math.max(0, request.offset()), 0, List.of(), limited(e.getMessage())));
+                }
             }
         }
     }
@@ -323,13 +422,8 @@ public final class CinemaServer implements AutoCloseable {
 
     /** Applies exactly the network permission/validation path, without sending a response. */
     public void applyControl(ServerPlayer player, Payloads.Control control) {
-        ScreenSession screen = screens.get(control.screen());
-        if (screen == null) { throw new IllegalArgumentException("This screen no longer exists"); }
-        ControlPolicy.check(screen, player.level().dimension().identifier().toString(), player.getX(), player.getY(), player.getZ(), hasRemote(player), control.revision());
-        BlockPos pos = new BlockPos(screen.key().x(), screen.key().y(), screen.key().z());
-        if (!player.level().hasChunkAt(pos) || !player.level().getBlockState(pos).is(Cinematic.CONTROLLER.get())) {
-            throw new IllegalArgumentException("This screen no longer exists");
-        }
+        ScreenSession screen = resolveScreen(control.screen());
+        ControlPolicy.check(screen, hasRemote(player), control.revision());
         long now = now();
         switch (control.action()) {
             case SELECT -> {

@@ -12,22 +12,25 @@ import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.resources.Identifier;
 
-/** Protocol 2. Every string, collection and enum is bounded before allocating client-controlled data. */
+/** Protocol 3. Every string, collection and enum is bounded before allocating client-controlled data. */
 public final class Payloads {
     public enum Action { SELECT, PLAY_PAUSE, STOP, SEEK, SKIP, LOOP, RESIZE, AUDIO_TRACK }
-    public enum RequestKind { LIBRARY, ACCESS, CLOCK, AUDIO_TRACKS }
+    public enum RequestKind { LIBRARY, ACCESS, CLOCK, AUDIO_TRACKS, SCREENS, TARGET, REFRESH }
     public static final UUID NO_SCREEN = new UUID(0, 0);
 
-    public record Request(RequestKind kind, UUID screen, int offset, long sentAt, String query) implements CustomPacketPayload {
-        public static final Type<Request> TYPE = Payloads.type("request_v2");
+    public record Request(RequestKind kind, UUID screen, int offset, long sentAt, String query, long revision) implements CustomPacketPayload {
+        public Request(RequestKind kind, UUID screen, int offset, long sentAt, String query) {
+            this(kind, screen, offset, sentAt, query, -1);
+        }
+        public static final Type<Request> TYPE = Payloads.type("request_v3");
         public static final StreamCodec<RegistryFriendlyByteBuf, Request> CODEC = codec((b, p) -> {
-            b.writeEnum(p.kind); b.writeUUID(p.screen); b.writeVarInt(p.offset); b.writeLong(p.sentAt); b.writeUtf(p.query, 64);
-        }, b -> new Request(b.readEnum(RequestKind.class), b.readUUID(), b.readVarInt(), b.readLong(), b.readUtf(64)));
+            b.writeEnum(p.kind); b.writeUUID(p.screen); b.writeVarInt(p.offset); b.writeLong(p.sentAt); b.writeUtf(p.query, 64); b.writeLong(p.revision);
+        }, b -> new Request(b.readEnum(RequestKind.class), b.readUUID(), b.readVarInt(), b.readLong(), b.readUtf(64), b.readLong()));
         @Override public Type<Request> type() { return TYPE; }
     }
 
     public record Control(UUID screen, long revision, Action action, String mediaId, long value, int width, int height) implements CustomPacketPayload {
-        public static final Type<Control> TYPE = Payloads.type("control_v2");
+        public static final Type<Control> TYPE = Payloads.type("control_v3");
         public static final StreamCodec<RegistryFriendlyByteBuf, Control> CODEC = codec((b, p) -> {
             b.writeUUID(p.screen); b.writeLong(p.revision); b.writeEnum(p.action); b.writeUtf(p.mediaId, 64);
             b.writeLong(p.value); b.writeVarInt(p.width); b.writeVarInt(p.height);
@@ -55,7 +58,7 @@ public final class Payloads {
     }
 
     public record Snapshots(List<Snapshot> screens) implements CustomPacketPayload {
-        public static final Type<Snapshots> TYPE = Payloads.type("snapshots_v2");
+        public static final Type<Snapshots> TYPE = Payloads.type("snapshots_v3");
         public static final StreamCodec<RegistryFriendlyByteBuf, Snapshots> CODEC = codec((b, p) -> {
             b.writeVarInt(p.screens.size()); p.screens.forEach(s -> Snapshot.encode(b, s));
         }, b -> {
@@ -69,7 +72,7 @@ public final class Payloads {
 
     public record LibraryItem(String id, String name, long durationMs, boolean video) {}
     public record Library(UUID screen, long requestId, int offset, int total, List<LibraryItem> items, String status) implements CustomPacketPayload {
-        public static final Type<Library> TYPE = Payloads.type("library_v2");
+        public static final Type<Library> TYPE = Payloads.type("library_v3");
         public static final StreamCodec<RegistryFriendlyByteBuf, Library> CODEC = codec((b, p) -> {
             b.writeUUID(p.screen); b.writeLong(p.requestId); b.writeVarInt(p.offset); b.writeVarInt(p.total); b.writeUtf(p.status, 512);
             b.writeVarInt(p.items.size());
@@ -86,7 +89,7 @@ public final class Payloads {
 
     public record AudioTracks(UUID screen, String mediaId, long requestId, List<AudioTrack> tracks, String status) implements CustomPacketPayload {
         public AudioTracks { tracks = AudioTrack.boundedTracks(tracks); }
-        public static final Type<AudioTracks> TYPE = Payloads.type("audio_tracks_v2");
+        public static final Type<AudioTracks> TYPE = Payloads.type("audio_tracks_v3");
         public static final StreamCodec<RegistryFriendlyByteBuf, AudioTracks> CODEC = codec((b, p) -> {
             b.writeUUID(p.screen); b.writeUtf(p.mediaId, 64); b.writeLong(p.requestId); b.writeUtf(p.status, 512);
             b.writeVarInt(p.tracks.size());
@@ -107,7 +110,7 @@ public final class Payloads {
     }
 
     public record Access(String baseUrl, String token, long expiresMs, String error) implements CustomPacketPayload {
-        public static final Type<Access> TYPE = Payloads.type("access_v2");
+        public static final Type<Access> TYPE = Payloads.type("access_v3");
         public static final StreamCodec<RegistryFriendlyByteBuf, Access> CODEC = codec((b, p) -> {
             b.writeUtf(p.baseUrl, 2048); b.writeUtf(p.token, 64); b.writeLong(p.expiresMs); b.writeUtf(p.error, 512);
         }, b -> new Access(b.readUtf(2048), b.readUtf(64), b.readLong(), b.readUtf(512)));
@@ -115,21 +118,59 @@ public final class Payloads {
     }
 
     public record Clock(long sentAt, long serverTimeMs) implements CustomPacketPayload {
-        public static final Type<Clock> TYPE = Payloads.type("clock_v2");
+        public static final Type<Clock> TYPE = Payloads.type("clock_v3");
         public static final StreamCodec<RegistryFriendlyByteBuf, Clock> CODEC = codec((b, p) -> {
             b.writeLong(p.sentAt); b.writeLong(p.serverTimeMs);
         }, b -> new Clock(b.readLong(), b.readLong()));
         @Override public Type<Clock> type() { return TYPE; }
     }
 
-    public record Open(UUID screen) implements CustomPacketPayload {
-        public static final Type<Open> TYPE = Payloads.type("open_v2");
-        public static final StreamCodec<RegistryFriendlyByteBuf, Open> CODEC = codec((b, p) -> b.writeUUID(p.screen), b -> new Open(b.readUUID()));
+    /** Null initial state explicitly opens the picker. */
+    public record Open(Snapshot initial) implements CustomPacketPayload {
+        public static final Type<Open> TYPE = Payloads.type("open_v3");
+        public static final StreamCodec<RegistryFriendlyByteBuf, Open> CODEC = codec((b, p) -> {
+            b.writeBoolean(p.initial != null);
+            if (p.initial != null) { Snapshot.encode(b, p.initial); }
+        }, b -> new Open(b.readBoolean() ? Snapshot.decode(b) : null));
         @Override public Type<Open> type() { return TYPE; }
     }
 
+    public record ScreenList(long requestId, int offset, int total, List<Snapshot> screens, String status) implements CustomPacketPayload {
+        public ScreenList {
+            screens = List.copyOf(screens);
+            if (offset < 0 || total < 0 || screens.size() > 20) { throw new IllegalArgumentException("Invalid screen page"); }
+        }
+        public static final Type<ScreenList> TYPE = Payloads.type("screen_list_v3");
+        public static final StreamCodec<RegistryFriendlyByteBuf, ScreenList> CODEC = codec((b, p) -> {
+            b.writeLong(p.requestId); b.writeVarInt(p.offset); b.writeVarInt(p.total); b.writeUtf(p.status, 512);
+            b.writeVarInt(p.screens.size()); p.screens.forEach(s -> Snapshot.encode(b, s));
+        }, b -> {
+            long request = b.readLong(); int offset = b.readVarInt(); int total = b.readVarInt(); String status = b.readUtf(512);
+            int count = boundedCount(b, 20);
+            var screens = new ArrayList<Snapshot>(count);
+            for (int i = 0; i < count; i++) { screens.add(Snapshot.decode(b)); }
+            return new ScreenList(request, offset, total, screens, status);
+        });
+        @Override public Type<ScreenList> type() { return TYPE; }
+    }
+
+    public record ScreenState(UUID screen, long requestId, Snapshot state, String status) implements CustomPacketPayload {
+        public ScreenState {
+            if (state != null && !screen.equals(state.id())) { throw new IllegalArgumentException("Screen identity mismatch"); }
+        }
+        public static final Type<ScreenState> TYPE = Payloads.type("screen_state_v3");
+        public static final StreamCodec<RegistryFriendlyByteBuf, ScreenState> CODEC = codec((b, p) -> {
+            b.writeUUID(p.screen); b.writeLong(p.requestId); b.writeUtf(p.status, 512); b.writeBoolean(p.state != null);
+            if (p.state != null) { Snapshot.encode(b, p.state); }
+        }, b -> {
+            UUID id = b.readUUID(); long request = b.readLong(); String status = b.readUtf(512);
+            return new ScreenState(id, request, b.readBoolean() ? Snapshot.decode(b) : null, status);
+        });
+        @Override public Type<ScreenState> type() { return TYPE; }
+    }
+
     public record Notice(UUID screen, String message) implements CustomPacketPayload {
-        public static final Type<Notice> TYPE = Payloads.type("notice_v2");
+        public static final Type<Notice> TYPE = Payloads.type("notice_v3");
         public static final StreamCodec<RegistryFriendlyByteBuf, Notice> CODEC = codec((b, p) -> {
             b.writeUUID(p.screen); b.writeUtf(p.message, 512);
         }, b -> new Notice(b.readUUID(), b.readUtf(512)));

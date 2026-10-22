@@ -32,8 +32,8 @@ The service implements authenticated GET and HEAD, single byte ranges, suffix/op
 | Native loader failure | Confirm the OS/architecture is included, the JDK is 25, and the JavaCPP cache is writable. On Linux use a compatible glibc environment. Do not install a separate player as a workaround; test the embedded JARs with `scripts/test-packaged.py`. |
 | Buffering or repeated resync | Check bandwidth, file seekability, and CPU load. Try a conventional 1080p/30 MP4 and fewer nearby screens. HTTP errors and decoder exceptions do not stop Minecraft. |
 | No sound | Check personal mute/volume, Master and Jukebox/Note Blocks volume, distance from the panel center, and whether the file has an audio track. |
-| Controls disabled or rejected | Hold a Remote in either hand within 16 blocks in the same dimension. Wait for the latest snapshot if another player just changed the screen. |
-| Large panel not visible | It is one vertical surface, facing the direction selected at placement. The rest of the panel has no collision blocks. Runtime visibility still needs testing on 26.3. |
+| Controls disabled or rejected | Hold a Remote in either hand. It works anywhere on the server and across dimensions; use Switch screen to replace a removed target. Wait for the latest snapshot if another player just changed the screen. |
+| Large panel not visible | It is one vertical surface, facing the direction selected at placement. Build every tile from Screen Blocks; all tiles are physical blocks. Runtime visibility still needs testing on 26.3. |
 | Sessions cannot be restored | Stop the server, back up `<world>/data/cinematic-sessions.dat`, and inspect/restore it. A malformed file disables further session saves to avoid overwriting it. Removing it deliberately resets all saved screen state. |
 
 Access tokens are never put in URLs or user-facing playback errors. Native FFmpeg can log its own diagnostics; avoid publishing unreviewed raw logs. Session data is separate from controller chunk NBT: include `data/cinematic-sessions.dat` in world backups. Preferences are client-local and do not affect other viewers.

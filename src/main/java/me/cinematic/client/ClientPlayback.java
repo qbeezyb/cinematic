@@ -26,8 +26,9 @@ import net.neoforged.neoforge.client.network.ClientPacketDistributor;
 
 /** Client-thread state; media threads read only immutable snapshots and the synchronized clock. */
 public final class ClientPlayback {
+    public final RemoteTarget remote = new RemoteTarget();
     private final Map<UUID, Entry> entries = new HashMap<>();
-    private final PersonalAudio settings = new PersonalAudio(FMLPaths.CONFIGDIR.get().resolve("cinematic-audio.properties"));
+    private final PersonalAudio settings;
     private final ClockSync clock = new ClockSync();
     private boolean synced;
     private Object world;
@@ -40,7 +41,10 @@ public final class ClientPlayback {
     private long lastClock;
     private long lastFlush;
 
-    public ClientPlayback() {
+    public ClientPlayback() { this(new PersonalAudio(FMLPaths.CONFIGDIR.get().resolve("cinematic-audio.properties"))); }
+
+    ClientPlayback(PersonalAudio settings) {
+        this.settings = settings;
         try { settings.load(); }
         catch (IOException e) { Cinematic.LOG.warn("Cannot read Cinematic personal volume preferences", e); }
     }
@@ -50,9 +54,33 @@ public final class ClientPlayback {
     public Entry get(UUID id) { return entries.get(id); }
     public Entry get(ScreenKey key) { return entries.values().stream().filter(entry -> entry.state.key().equals(key)).findFirst().orElse(null); }
 
+    public Payloads.Snapshot controlState(UUID id) {
+        Entry nearby = entries.get(id);
+        return remote.newest(id, nearby == null ? null : nearby.state());
+    }
+
+    public long controlPosition(UUID id) {
+        var state = controlState(id);
+        if (state == null) { return 0; }
+        long serverNow = synced ? clock.serverTime(now()) : state.serverTimeMs();
+        return new Timeline(state.durationMs(), state.positionMs(), state.anchorMs(), state.playing(), state.looping()).positionAt(serverNow);
+    }
+
+    public String controlStatus(UUID id) {
+        var state = controlState(id);
+        if (state == null) { return "Screen unavailable"; }
+        Entry local = entries.get(id);
+        if (local != null && local.decoder != null && local.state.revision() == state.revision()) { return local.status(); }
+        if (!state.error().isEmpty()) { return state.error(); }
+        if (state.mediaId().isEmpty()) { return "No media selected"; }
+        if (state.playing() && (synced ? clock.serverTime(now()) : state.serverTimeMs()) < state.anchorMs()) { return "Preparing…"; }
+        return state.playing() ? "Playing" : "Paused";
+    }
+
     public void snapshots(Payloads.Snapshots packet) {
         var retained = new HashSet<UUID>();
         for (var state : packet.screens()) {
+            remote.observe(state);
             retained.add(state.id());
             Entry entry = entries.get(state.id());
             if (entry == null) { entries.put(state.id(), new Entry(state)); }
@@ -147,7 +175,7 @@ public final class ClientPlayback {
 
     public void reset() {
         entries.values().forEach(Entry::close);
-        entries.clear(); clock.reset(); synced = false;
+        entries.clear(); remote.open(null); clock.reset(); synced = false;
         world = null; connection = null;
         baseUrl = ""; token = ""; accessError = ""; renewalAt = 0; lastClock = 0; lastAccessRequest = 0;
         flush();
