@@ -25,7 +25,10 @@ import java.util.function.Consumer;
 
 /** Immutable published indexes; scanning and native probing never run on the Minecraft thread. */
 public final class MediaLibrary implements AutoCloseable {
-    public record ProbeResult(long durationMs, int width, int height, boolean audio) {}
+    public record ProbeResult(long durationMs, int width, int height, boolean audio, List<AudioTrack> audioTracks) {
+        public ProbeResult(long durationMs, int width, int height, boolean audio) { this(durationMs, width, height, audio, List.of()); }
+        public ProbeResult { audioTracks = AudioTrack.boundedTracks(audioTracks); }
+    }
     @FunctionalInterface
     public interface Probe { ProbeResult read(Path path) throws Exception; }
 
@@ -73,7 +76,7 @@ public final class MediaLibrary implements AutoCloseable {
                         if (entry == null) {
                             ProbeResult info = probe.read(path);
                             entry = new MediaEntry(id, path.getFileName().toString(), path, size,
-                                    modified, info.durationMs(), info.width(), info.height(), info.audio());
+                                    modified, info.durationMs(), info.width(), info.height(), info.audio(), info.audioTracks());
                         }
                         next.put(id, entry);
                     } catch (Exception | LinkageError e) {

@@ -12,7 +12,11 @@ java.toolchain.languageVersion = JavaLanguageVersion.of(25)
 repositories { mavenCentral() }
 
 sourceSets {
-    test { java.srcDirs = ['tests/java'] }
+    test {
+        java.srcDirs = ['tests/java']
+        compileClasspath += sourceSets.main.compileClasspath
+        runtimeClasspath += sourceSets.main.runtimeClasspath
+    }
 }
 
 neoForge {
@@ -145,4 +149,14 @@ tasks.register('exportMediaArtifacts', Copy) {
     }
     into('licenses') { from 'licenses' }
     from 'THIRD_PARTY_NOTICES.md', 'build.gradle', 'gradle.lockfile'
+}
+
+// Only the GameTest run receives synthetic media; release jars do not include fixtures.
+tasks.named('runGameTestServer') {
+    doFirst {
+        copy {
+            from 'tests/fixtures/languages.mkv'
+            into 'run/cinematic/media'
+        }
+    }
 }

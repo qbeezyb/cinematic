@@ -228,7 +228,15 @@ public final class CinemaServer implements AutoCloseable {
         // Pick all donors before moving any anchors. Keep the active/selected screen on merge.
         long wallTime = now();
         Comparator<ScreenSession> priority = Comparator.<ScreenSession>comparingInt(s -> s.timeline().playingAt(wallTime) ? 0 : s.mediaId().isEmpty() ? 2 : 1)
-                .thenComparing(s -> s.id().toString());
+                // Temporary splits during construction can have identical playback state.
+                // Keep the lower/left anchor on rejoin instead of picking a random UUID.
+                .thenComparingInt(s -> s.key().y())
+                .thenComparingInt(s -> switch (facing) {
+                    case 0 -> s.key().x();
+                    case 1 -> s.key().z();
+                    case 2 -> -s.key().x();
+                    default -> -s.key().z();
+                }).thenComparing(s -> s.id().toString());
         var used = new HashSet<UUID>();
         var assignments = new ArrayList<ScreenSession>();
         for (WallPanel panel : panels) {
@@ -242,7 +250,7 @@ public final class CinemaServer implements AutoCloseable {
             } else if (!candidates.isEmpty()) {
                 donor = candidates.getFirst();
                 assigned = new ScreenSession(UUID.randomUUID(), panel.origin(), facing, panel.width(), panel.height(),
-                        donor.mediaId(), donor.timeline(), donor.revision() + 1);
+                        donor.mediaId(), donor.timeline(), donor.revision() + 1, donor.audioStream());
             } else { assigned = new ScreenSession(UUID.randomUUID(), panel.origin(), facing); }
             assignments.add(assigned);
         }
@@ -275,6 +283,18 @@ public final class CinemaServer implements AutoCloseable {
         switch (request.kind()) {
             case CLOCK -> PacketDistributor.sendToPlayer(player, new Payloads.Clock(request.sentAt(), now()));
             case ACCESS -> sendAccess(player);
+            case AUDIO_TRACKS -> {
+                ScreenSession screen = screens.get(request.screen());
+                if (screen == null) { notice(player, request.screen(), "This screen no longer exists"); return; }
+                try {
+                    ControlPolicy.check(screen, player.level().dimension().identifier().toString(), player.getX(), player.getY(), player.getZ(), hasRemote(player), screen.revision());
+                    var entry = library == null ? null : library.get(screen.mediaId());
+                    if (entry == null || !screen.mediaId().equals(request.query())) { throw new IllegalArgumentException("Media changed or unavailable. Reopen Audio."); }
+                    PacketDistributor.sendToPlayer(player, new Payloads.AudioTracks(screen.id(), entry.id(), request.sentAt(), entry.audioTracks(), ""));
+                } catch (IllegalArgumentException e) {
+                    PacketDistributor.sendToPlayer(player, new Payloads.AudioTracks(screen.id(), request.query(), request.sentAt(), List.of(), limited(e.getMessage())));
+                }
+            }
             case LIBRARY -> {
                 ScreenSession screen = screens.get(request.screen());
                 if (screen == null) { notice(player, request.screen(), "This screen no longer exists"); return; }
@@ -317,19 +337,27 @@ public final class CinemaServer implements AutoCloseable {
                 if (entry == null) { throw new IllegalArgumentException("Media missing or invalid; ask an operator to run /cinematic reload"); }
                 screen.select(entry.id(), entry.durationMs(), now);
             }
+            case AUDIO_TRACK -> {
+                var entry = library == null ? null : library.get(screen.mediaId());
+                if (entry == null || !screen.mediaId().equals(control.mediaId()) || control.value() < 0
+                        || entry.audioTracks().stream().noneMatch(t -> t.streamIndex() == control.value())) {
+                    throw new IllegalArgumentException("Audio track is unavailable for this media. Reopen Audio.");
+                }
+                screen.selectAudio((int) control.value(), now);
+            }
             case RESIZE -> throw new IllegalArgumentException("Screen size follows the blocks you build. Add or remove Screen Blocks to resize.");
             case PLAY_PAUSE -> {
                 if (library == null || library.get(screen.mediaId()) == null) { throw new IllegalArgumentException("Select an available media file first"); }
-                screen.updateTimeline(screen.timeline().playingAt(now) ? screen.timeline().pause(now) : screen.timeline().play(now));
+                screen.updateTimeline(screen.timeline().playingAt(now) ? screen.timeline().pause(now) : screen.timeline().preparePlay(now));
             }
             case STOP -> screen.updateTimeline(screen.timeline().stop(now));
             case SEEK -> {
                 if (control.value() < 0 || control.value() > screen.timeline().durationMs()) { throw new IllegalArgumentException("Seek is outside the media timeline"); }
-                screen.updateTimeline(screen.timeline().seek(control.value(), now));
+                screen.updateTimeline(screen.timeline().prepareSeek(control.value(), now));
             }
             case SKIP -> {
                 if (control.value() != -10_000 && control.value() != 10_000) { throw new IllegalArgumentException("Skip must be ±10 seconds"); }
-                screen.updateTimeline(screen.timeline().seek(screen.timeline().positionAt(now) + control.value(), now));
+                screen.updateTimeline(screen.timeline().prepareSeek(screen.timeline().positionAt(now) + control.value(), now));
             }
             case LOOP -> {
                 if (control.value() != 0 && control.value() != 1) { throw new IllegalArgumentException("Invalid looping value"); }
@@ -395,9 +423,12 @@ public final class CinemaServer implements AutoCloseable {
         var entry = library == null ? null : library.get(screen.mediaId());
         String error = !mediaError.isEmpty() ? mediaError : !screen.mediaId().isEmpty() && entry == null
                 ? "Media missing or invalid; ask an operator to run /cinematic reload" : "";
+        var timeline = screen.timeline();
+        if (!timeline.playingAt(now)) { timeline = timeline.pause(now); }
         return new Payloads.Snapshot(screen.id(), screen.key(), screen.facing(), screen.width(), screen.height(), screen.mediaId(),
                 entry == null ? "" : entry.name(), screen.timeline().durationMs(), entry == null ? 0 : entry.width(), entry == null ? 0 : entry.height(),
-                entry != null && entry.audio(), screen.timeline().positionAt(now), now, screen.timeline().playingAt(now), screen.timeline().looping(), screen.revision(),
+                entry != null && entry.audio(), entry == null ? -1 : entry.resolvedAudioStream(screen.audioStream()),
+                timeline.positionMs(), timeline.anchorMs(), now, timeline.playing(), timeline.looping(), screen.revision(),
                 CinemaConfig.AUDIO_RANGE.getAsInt(), limited(error));
     }
 
@@ -409,7 +440,7 @@ public final class CinemaServer implements AutoCloseable {
     private void save() {
         if (!persistenceHealthy || !saving.compareAndSet(false, true)) { return; }
         long now = now();
-        var snapshot = screens.values().stream().map(s -> new ScreenSession(s.id(), s.key(), s.facing(), s.width(), s.height(), s.mediaId(), s.timeline().pause(now), s.revision())).toList();
+        var snapshot = screens.values().stream().map(s -> new ScreenSession(s.id(), s.key(), s.facing(), s.width(), s.height(), s.mediaId(), s.timeline().pause(now), s.revision(), s.audioStream())).toList();
         saves.submit(() -> {
             try { store.save(snapshot, now); }
             catch (IOException e) { Cinematic.LOG.error("Cannot save Cinematic sessions", e); }

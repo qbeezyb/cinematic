@@ -11,6 +11,7 @@ public final class ScreenSession {
     private int height;
     private String mediaId;
     private Timeline timeline;
+    private int audioStream = -1;
     private long revision;
 
     public ScreenSession(UUID id, ScreenKey key, int facing) {
@@ -19,7 +20,14 @@ public final class ScreenSession {
 
     public ScreenSession(UUID id, ScreenKey key, int facing, int width, int height,
             String mediaId, Timeline timeline, long revision) {
+        this(id, key, facing, width, height, mediaId, timeline, revision, -1);
+    }
+
+    public ScreenSession(UUID id, ScreenKey key, int facing, int width, int height,
+            String mediaId, Timeline timeline, long revision, int audioStream) {
         validateDimensions(width, height);
+        if (audioStream < -1) { throw new IllegalArgumentException("Invalid audio stream"); }
+        this.audioStream = audioStream;
         if (facing < 0 || facing > 3 || revision < 0 || mediaId == null || mediaId.length() > 64) {
             throw new IllegalArgumentException("Invalid screen state");
         }
@@ -63,9 +71,19 @@ public final class ScreenSession {
             throw new IllegalArgumentException("Unknown media ID");
         }
         this.mediaId = mediaId;
+        audioStream = -1;
         timeline = new Timeline(durationMs, 0, nowMs, false, timeline.looping());
         revision++;
     }
+
+    public void selectAudio(int stream, long nowMs) {
+        if (stream < 0) { throw new IllegalArgumentException("Invalid audio stream"); }
+        audioStream = stream;
+        timeline = timeline.prepare(nowMs);
+        revision++;
+    }
+
+    public int audioStream() { return audioStream; }
 
     public void updateTimeline(Timeline value) {
         timeline = value;

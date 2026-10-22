@@ -40,7 +40,7 @@ shutil.rmtree(classes, ignore_errors=True)
 classes.mkdir(parents=True, exist_ok=True)
 sources = list((ROOT / "src/main/java/me/cinematic/core").glob("*.java"))
 sources += [p for p in (ROOT / "src/main/java/me/cinematic/media").glob("*.java") if args.media or p.name != "NativeMediaProbe.java"]
-sources += [p for p in (ROOT / "tests/java").rglob("*.java") if args.media or p.name not in {"NativeMediaTest.java", "MediaDecoderTest.java"}]
+sources += [p for p in (ROOT / "tests/java").rglob("*.java") if p.name != "NetworkTest.java" and (args.media or p.name not in {"NativeMediaTest.java", "MediaDecoderTest.java"})]
 if args.media:
     sources += [ROOT / 'src/main/java/me/cinematic/client/MediaDecoder.java']
 sources += [ROOT / "scripts/OfflineTestRunner.java"]

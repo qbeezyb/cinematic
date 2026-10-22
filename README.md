@@ -2,20 +2,20 @@
 
 Shared cinema screens for Minecraft Java **26.3** and **NeoForge 26.3.0.95**. Install the same mod on the server and every viewing client. Singleplayer runs the media service locally. A separate VLC or FFmpeg installation is not needed.
 
-**Status:** main and test sources compile against the cached NeoForge 26.3.0.95 APIs. Twenty-five JUnit tests pass, including native WAV/MP4/MKV decoding and seeking on macOS ARM64; one live HTTP test is blocked by sandbox restrictions. A complete Gradle build, packaged FML startup, rendering, sound, multiplayer, and the platform matrix remain unverified. See [verification results](docs/verification.md).
+**Status:** Java 25 compilation, formatting/style checks, 40 JUnit tests, eight Cinematic GameTests (plus the vanilla smoke test), production packaging, and the packaged native smoke test pass on macOS ARM64. A 30-second native 1080p/30 run delivers 100% of expected frames after warmup without recovery seeks. Minecraft gameplay and two-client verification limits are recorded in [verification results](docs/verification.md).
 
 ## Play
 
 1. Put media in `cinematic/media/` beneath the server's working directory, or the singleplayer game directory. Subdirectories are supported. Run `/cinematic reload` as an operator after adding or replacing files; startup also scans automatically.
 2. Craft a **Screen Block** with glass in the center and eight black concrete blocks around it. Craft a **Remote** from an iron ingot, redstone, and a stone button, in any arrangement. Both items also appear in the Cinematic creative tab.
 3. Place Screen Blocks in a flat, filled rectangle facing the viewers. Touching blocks facing the same direction automatically form one screen, up to 40×40 blocks per panel. Blocks placed against an existing Screen Block inherit its facing. Every tile is a physical block; add or remove tiles to resize. Walls with gaps split into smaller filled panels until the gaps are filled.
-4. Right-click any block in the screen. Hold a Remote in either hand within 16 blocks of the wall to choose media, play/pause, stop, seek, skip ten seconds, or loop. The interface shows the wall’s dimensions. After selecting media, press **Play**; selection initially pauses on a preview.
+4. Right-click any block in the screen. Hold a Remote in either hand within 16 blocks of the wall to choose media, play/pause, stop, seek, skip ten seconds, or loop. The interface shows the wall’s dimensions. After selecting media, press **Play**; selection initially pauses on a preview. **Audio…** selects a language track for everyone watching that screen; it is disabled when no alternative exists. Play/resume, playing seeks, and playing language changes prepare for 1.5 seconds before the shared timeline advances.
 
 Growing a screen preserves its selected media and timeline. When selected screens merge, an actively playing screen takes priority. Separate facing directions and parallel walls stay independent. Existing controller items keep their registry ID and recipe; old virtual panels resize to the physical blocks present when their chunks load.
 
 Every viewer can set personal volume and mute without a Remote. These settings persist per server and screen. Master and Jukebox/Note Blocks sound settings also apply. Sound is positioned at the panel center and fades over 64 blocks by default. Keyboard focus, arrow-key sliders, native Minecraft widgets, and tooltips are supported. Audio-only files show their filename and progress on the panel.
 
-Common MP4, MKV, WebM, AVI, MP3, WAV, and Ogg containers are accepted when their codecs are supported by the bundled FFmpeg build. MOV, M4A, and FLAC are also indexed. The default audio track is used. Uploads, external media URLs, subtitles, playlists, transcoding, and editing are outside this version's scope.
+Common MP4, MKV, WebM, AVI, MP3, WAV, and Ogg containers are accepted when their codecs are supported by the bundled FFmpeg build. MOV, M4A, and FLAC are also indexed. The container’s default audio track is selected initially, falling back to its first audio stream. Language choices persist with the screen; selecting different media resets to its default. Audio track metadata is limited to 64 tracks per file. Uploads, external media URLs, subtitles, playlists, transcoding, and editing are outside this version's scope.
 
 ## Install and configure
 
@@ -42,7 +42,7 @@ The toolchain is Java 25, Gradle 9.2.1, and ModDevGradle 2.0.148. Supporting scr
 | JUnit only, including native media tests | `./gradlew test` |
 | Development client | `./gradlew runClient` |
 | Development dedicated server | `./gradlew runServer` |
-| Seven NeoForge GameTests | `./gradlew runGameTestServer` |
+| NeoForge GameTests | `./gradlew runGameTestServer` |
 | Test embedded natives from the built JAR | `python3 scripts/test-packaged.py build/libs/cinematic-0.1.0.jar` |
 | Export original media artifacts for redistribution review | `./gradlew exportMediaArtifacts` |
 | Collect upstream source and notices | `python3 scripts/collect-redistribution.py` |
@@ -65,9 +65,9 @@ The offline runner needs cached JUnit 6.0.3 artifacts. Its default run excludes 
 
 ## Implementation and limits
 
-The server owns screen identities, revisions, dimensions, media selection, and monotonic timelines. Playback continues while controller chunks are unloaded. Sessions save periodically under `<world>/data/cinematic-sessions.dat` and restore **paused** after restart. Personal audio preferences live in `config/cinematic-audio.properties` on each client.
+The server owns screen identities, revisions, dimensions, media selection, and monotonic timelines. Playback continues while controller chunks are unloaded. Sessions save periodically under `<world>/data/cinematic-sessions.dat` and restore **paused** after restart. Session storage version 2 retains the selected audio stream and loads version-1 saves with default audio. Networking requires protocol 2 on every client and the server; upgrade them together. Personal audio preferences live in `config/cinematic-audio.properties` on each client.
 
-Clients target at most 1920×1080 and 30 decoded video frames per second, preserve the video aspect ratio with black bars, and correct timeline drift exceeding 250 ms. Each client decodes its four nearest selected screens, with five queued video frames per decoder and bounded PCM buffers. Each player receives at most 64 nearby screen snapshots within 256 blocks. The media index is limited to 4,096 supported files, eight directory levels deep. These bounds keep resource use finite; the 1080p/30 target is not a measured performance guarantee.
+Clients target at most 1920×1080 and 30 decoded video frames per second, preserve the video aspect ratio with black bars, and correct timeline drift exceeding 250 ms. Each client decodes its four nearest selected screens, with approximately 500 ms of prebuffering, at most 16 queued video frames (under 128 MiB), and two seconds of PCM per decoder. Each player receives at most 64 nearby screen snapshots within 256 blocks. The media index is limited to 4,096 supported files, eight directory levels deep. These bounds keep resource use finite. The synthetic native playback measurement does not guarantee the same performance for every codec or Minecraft rendering load.
 
 See [architecture](docs/architecture.md), [verification and manual test matrix](docs/verification.md), and [third-party notices and redistribution](THIRD_PARTY_NOTICES.md). The existing `AGENTS.md` is preserved; the current project layout and commands are documented here.
 

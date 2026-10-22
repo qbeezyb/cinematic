@@ -20,10 +20,14 @@ public final class MediaSound extends AbstractTickableSoundInstance {
     private final MediaDecoder decoder;
     private final java.util.UUID screen;
     private final int range;
+    private final int epoch;
+    private final long pcmGeneration;
 
     public MediaSound(Payloads.Snapshot state, MediaDecoder decoder) {
         super(me.cinematic.Cinematic.MEDIA_SOUND.get(), SoundSource.RECORDS, RandomSource.create());
         this.decoder = decoder;
+        epoch = decoder.epoch();
+        pcmGeneration = decoder.pcm().generation();
         this.screen = state.id();
         this.range = state.audioRange();
         var center = PanelGeometry.point(state.key(), state.facing(), state.width() / 2.0, state.height() / 2.0, 0.03);
@@ -46,20 +50,19 @@ public final class MediaSound extends AbstractTickableSoundInstance {
     @Override public CompletableFuture<AudioStream> getStream(SoundBufferLibrary buffers, Sound sound, boolean loop) {
         return CompletableFuture.completedFuture(new AudioStream() {
             private volatile boolean closed;
-            private long starvedAt;
+            private long cursor = decoder.position();
             @Override public AudioFormat getFormat() { return new AudioFormat(48_000, 16, 1, true, false); }
             @Override public ByteBuffer read(int capacity) throws IOException {
-                if (closed) { return ByteBuffer.allocateDirect(0); }
-                int size = Math.min(capacity, 2048) & ~1;
+                if (closed || decoder.epoch() != epoch) { return ByteBuffer.allocateDirect(0); }
+                int size = Math.min(capacity, 9600) & ~1;
                 ByteBuffer data = ByteBuffer.allocateDirect(size);
                 try {
-                    int count = decoder.pcm().read(data, 50);
+                    cursor = Math.max(cursor, decoder.position());
+                    int count = decoder.pcm().readAt(data, cursor, 50, pcmGeneration);
+                    if (decoder.epoch() != epoch) { return ByteBuffer.allocateDirect(0); }
                     if (count == 0 && decoder.ended()) { return data.flip(); }
-                    if (count == 0) {
-                        if (starvedAt == 0) { starvedAt = System.nanoTime(); }
-                        if (System.nanoTime() - starvedAt > 250_000_000L) { decoder.requestResync(); }
-                    } else { starvedAt = 0; }
                     while (data.hasRemaining()) { data.put((byte) 0); }
+                    cursor += size / 96;
                     return data.flip();
                 } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IOException("Audio read interrupted", e); }
             }

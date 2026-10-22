@@ -35,6 +35,9 @@ public final class CinematicClient {
             PLAYBACK.retry(packet.screen());
             Minecraft.getInstance().gui.setScreen(new CinemaScreen(packet.screen()));
         });
+        event.register(Payloads.AudioTracks.TYPE, (packet, context) -> {
+            if (Minecraft.getInstance().gui.screen() instanceof CinemaScreen screen) { screen.audioTracks(packet); }
+        });
         event.register(Payloads.Library.TYPE, (packet, context) -> {
             if (Minecraft.getInstance().gui.screen() instanceof CinemaScreen screen) { screen.library(packet); }
         });

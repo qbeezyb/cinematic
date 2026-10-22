@@ -17,7 +17,7 @@ import java.util.UUID;
 /** Versioned, world-local atomic persistence. Loaded timelines always start paused. */
 public final class SessionStore {
     private static final int MAGIC = 0x43494E45;
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
     private static final int MAX_SCREENS = 100_000;
     private final Path file;
 
@@ -26,7 +26,9 @@ public final class SessionStore {
     public List<ScreenSession> load(long nowMs) throws IOException {
         if (!Files.exists(file)) { return List.of(); }
         try (var in = new DataInputStream(new BufferedInputStream(Files.newInputStream(file)))) {
-            if (in.readInt() != MAGIC || in.readInt() != VERSION) {
+            int magic = in.readInt();
+            int version = in.readInt();
+            if (magic != MAGIC || version < 1 || version > VERSION) {
                 throw new IOException("Unsupported Cinematic sessions file: " + file);
             }
             int count = in.readInt();
@@ -43,8 +45,9 @@ public final class SessionStore {
                 long position = in.readLong();
                 boolean loop = in.readBoolean();
                 long revision = in.readLong();
+                int audioStream = version >= 2 ? in.readInt() : -1;
                 result.add(new ScreenSession(id, key, facing, width, height, media,
-                        new Timeline(duration, position, nowMs, false, loop), revision));
+                        new Timeline(duration, position, nowMs, false, loop), revision, audioStream));
             }
             if (in.read() != -1) { throw new IOException("Trailing session data"); }
             return List.copyOf(result);
@@ -77,6 +80,7 @@ public final class SessionStore {
                     out.writeLong(s.timeline().positionAt(nowMs));
                     out.writeBoolean(s.timeline().looping());
                     out.writeLong(s.revision());
+                    out.writeInt(s.audioStream());
                 }
             }
             try {

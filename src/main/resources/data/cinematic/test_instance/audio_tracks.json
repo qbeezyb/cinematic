@@ -1,0 +1,7 @@
+{
+  "type": "minecraft:function",
+  "function": "cinematic:audio_tracks",
+  "environment": "minecraft:default",
+  "structure": "cinematic:empty",
+  "max_ticks": 400
+}

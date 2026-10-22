@@ -31,6 +31,7 @@ public final class CinemaGameTests {
         FUNCTIONS.register("recipes", () -> CinemaGameTests::recipes);
         FUNCTIONS.register("dimensions", () -> CinemaGameTests::dimensions);
         FUNCTIONS.register("persistence", () -> CinemaGameTests::persistence);
+        FUNCTIONS.register("audio_tracks", () -> CinemaGameTests::audioTracks);
         FUNCTIONS.register("unauthorized_controls", () -> CinemaGameTests::unauthorizedControls);
     }
 
@@ -98,6 +99,7 @@ public final class CinemaGameTests {
         var screen = service.ensure(level, helper.absolutePos(relative), level.getBlockState(helper.absolutePos(relative)));
         helper.assertTrue(screen.width() == 1 && screen.height() == 1, "Screens start at 1×1");
         screen.select("a".repeat(32), 60_000, 0);
+        screen.selectAudio(2, 0);
         var identity = screen.id();
         var facing = level.getBlockState(helper.absolutePos(relative)).getValue(ScreenControllerBlock.FACING);
         var right = facing.getCounterClockWise();
@@ -108,14 +110,16 @@ public final class CinemaGameTests {
         }
         var far = helper.absolutePos(relative.relative(right, 2).above());
         var joined = service.ensure(level, far, level.getBlockState(far));
-        helper.assertTrue(joined.id().equals(identity) && joined.width() == 3 && joined.height() == 2, "Touching blocks share one 3×2 screen");
+        helper.assertTrue(joined.id().equals(identity) && joined.width() == 3 && joined.height() == 2, "Touching blocks share one 3×2 screen: got " + joined.width() + "×" + joined.height() + ", same identity=" + joined.id().equals(identity));
         helper.assertTrue(joined.mediaId().equals("a".repeat(32)), "Adding blocks preserves media selection");
+        helper.assertTrue(joined.audioStream() == 2, "Growth preserves shared audio selection");
         helper.setBlock(relative.relative(right, 1), net.minecraft.world.level.block.Blocks.AIR);
         joined = service.ensure(level, far, level.getBlockState(far));
         helper.assertTrue(joined.width() * joined.height() < 6, "Removing a block splits the panel without drawing across the hole");
         helper.setBlock(relative.relative(right, 1), Cinematic.CONTROLLER.get().defaultBlockState().setValue(ScreenControllerBlock.FACING, facing));
         joined = service.ensure(level, far, level.getBlockState(far));
         helper.assertTrue(joined.width() == 3 && joined.height() == 2, "Filling the hole reconnects the screen");
+        helper.assertTrue(joined.audioStream() == 2, "Splitting and rejoining preserve shared audio selection");
         var extra = relative.relative(right, 3);
         helper.setBlock(extra, Cinematic.CONTROLLER.get().defaultBlockState().setValue(ScreenControllerBlock.FACING, facing.getOpposite()));
         var separatePos = helper.absolutePos(extra);
@@ -136,6 +140,7 @@ public final class CinemaGameTests {
             for (int y = 0; y < 2; y++) { helper.setBlock(relative.relative(right, x).above(y), state); }
         }
         screen = CinemaServer.get(level.getServer()).ensure(level, helper.absolutePos(relative), state);
+        screen.selectAudio(2, 0);
         screen.updateTimeline(screen.timeline().play(0));
         java.nio.file.Path folder = null;
         try {
@@ -145,6 +150,7 @@ public final class CinemaGameTests {
             var restored = store.load(50_000).getFirst();
             helper.assertTrue(restored.id().equals(screen.id()) && restored.width() == 3 && restored.height() == 2, "Connected screen identity and dimensions survive persistence");
             helper.assertTrue(!restored.timeline().playing() && restored.timeline().positionAt(90_000) == 5000, "Restart restores paused playback");
+            helper.assertTrue(restored.audioStream() == 2, "Restart restores shared audio selection");
         } catch (IOException error) { throw new IllegalStateException(error); }
         finally {
             if (folder != null) {
@@ -168,18 +174,62 @@ public final class CinemaGameTests {
         player.setItemInHand(InteractionHand.OFF_HAND, ItemStack.EMPTY);
         var loop = new Payloads.Control(screen.id(), screen.revision(), Payloads.Action.LOOP, "", 1, 0, 0);
         helper.assertTrue(rejected(() -> service.applyControl(player, loop)), "No remote means no controls");
+        var audio = new Payloads.Control(screen.id(), screen.revision(), Payloads.Action.AUDIO_TRACK, "a".repeat(32), 2, 0, 0);
+        helper.assertTrue(rejected(() -> service.applyControl(player, audio)), "Audio selection requires a Remote");
         player.setItemInHand(InteractionHand.OFF_HAND, Cinematic.REMOTE.get().getDefaultInstance());
         service.applyControl(player, loop);
         helper.assertTrue(screen.timeline().looping(), "Offhand remote permits controls");
         helper.assertTrue(rejected(() -> service.applyControl(player, loop)), "Stale revision rejected");
+        helper.assertTrue(rejected(() -> service.applyControl(player, audio)), "Stale audio selection rejected");
         player.setPos(pos.getX() + 18, pos.getY(), pos.getZ());
         var distant = new Payloads.Control(screen.id(), screen.revision(), Payloads.Action.LOOP, "", 0, 0, 0);
         helper.assertTrue(rejected(() -> service.applyControl(player, distant)) && screen.timeline().looping(), "Distant controls do not mutate the screen");
         player.setPos(pos.getX() + .5, pos.getY() + .5, pos.getZ() + .5);
+        var unavailable = new Payloads.Control(screen.id(), screen.revision(), Payloads.Action.AUDIO_TRACK, "a".repeat(32), 999, 0, 0);
+        helper.assertTrue(rejected(() -> service.applyControl(player, unavailable)), "Unindexed media and audio tracks rejected");
         var resize = new Payloads.Control(screen.id(), screen.revision(), Payloads.Action.RESIZE, "", 0, 8, 6);
         helper.assertTrue(rejected(() -> service.applyControl(player, resize)) && screen.width() == 1, "Network resize cannot create a virtual screen");
         player.setItemInHand(InteractionHand.OFF_HAND, ItemStack.EMPTY);
         helper.succeed();
+    }
+
+    private static void audioTracks(GameTestHelper helper) {
+        var relative = new BlockPos(1, 1, 1);
+        helper.setBlock(relative, Cinematic.CONTROLLER.get());
+        var level = helper.getLevel();
+        var pos = helper.absolutePos(relative);
+        var service = CinemaServer.get(level.getServer());
+        var screen = service.ensure(level, pos, level.getBlockState(pos));
+        var player = FakePlayerFactory.getMinecraft(level);
+        player.setPos(pos.getX() + .5, pos.getY() + .5, pos.getZ() + .5);
+        player.setItemInHand(InteractionHand.MAIN_HAND, Cinematic.REMOTE.get().getDefaultInstance());
+        final String media;
+        try {
+            var path = net.neoforged.fml.loading.FMLPaths.GAMEDIR.get().resolve("cinematic/media/languages.mkv");
+            media = me.cinematic.media.MediaLibrary.opaqueId("languages.mkv", Files.size(path), Files.getLastModifiedTime(path).toMillis());
+        } catch (IOException e) { throw new IllegalStateException("GameTest language fixture missing", e); }
+        helper.startSequence().thenWaitUntil(() -> {
+            try { service.applyControl(player, new Payloads.Control(screen.id(), screen.revision(), Payloads.Action.SELECT, media, 0, 0, 0)); }
+            catch (IllegalArgumentException e) { helper.assertTrue(false, "Waiting for language fixture indexing"); }
+        }).thenExecute(() -> {
+            var paused = new Payloads.Control(screen.id(), screen.revision(), Payloads.Action.AUDIO_TRACK, media, 1, 0, 0);
+            service.applyControl(player, paused);
+            helper.assertTrue(screen.audioStream() == 1 && !screen.timeline().playing(), "Paused language switch stays paused");
+            helper.assertTrue(rejected(() -> service.applyControl(player, paused)), "Stale language revision rejected");
+            service.applyControl(player, new Payloads.Control(screen.id(), screen.revision(), Payloads.Action.PLAY_PAUSE, "", 0, 0, 0));
+            service.applyControl(player, new Payloads.Control(screen.id(), screen.revision(), Payloads.Action.AUDIO_TRACK, media, 2, 0, 0));
+            helper.assertTrue(screen.audioStream() == 2 && screen.timeline().playing(), "Playing language switch retains playback intent");
+            helper.assertTrue(screen.timeline().anchorMs() > CinemaServer.now(), "Playing switch schedules preparation");
+            var unknown = new Payloads.Control(screen.id(), screen.revision(), Payloads.Action.AUDIO_TRACK, media, 999, 0, 0);
+            helper.assertTrue(rejected(() -> service.applyControl(player, unknown)), "Unknown global stream rejected");
+            var wrongMedia = new Payloads.Control(screen.id(), screen.revision(), Payloads.Action.AUDIO_TRACK, "b".repeat(32), 1, 0, 0);
+            helper.assertTrue(rejected(() -> service.applyControl(player, wrongMedia)), "Audio selection must match indexed media");
+            player.setPos(pos.getX() + 20, pos.getY(), pos.getZ());
+            var distant = new Payloads.Control(screen.id(), screen.revision(), Payloads.Action.AUDIO_TRACK, media, 1, 0, 0);
+            helper.assertTrue(rejected(() -> service.applyControl(player, distant)), "Distant audio switch rejected");
+            player.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+            helper.assertTrue(screen.audioStream() == 2, "Rejected controls preserve shared audio");
+        }).thenSucceed();
     }
 
     private static boolean rejected(Runnable action) {

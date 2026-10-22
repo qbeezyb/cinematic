@@ -17,13 +17,21 @@ import net.neoforged.neoforge.client.network.ClientPacketDistributor;
 
 /** Vanilla widgets provide keyboard focus, narration, pressed/disabled states and tooltips. */
 public final class CinemaScreen extends Screen {
-    private enum Page { PLAYER, LIBRARY }
+    private enum Page { PLAYER, LIBRARY, AUDIO }
     private final UUID id;
     private Page page = Page.PLAYER;
     private final List<Button> controls = new ArrayList<>();
     private final List<Button> mediaRows = new ArrayList<>();
     private ExtendedSlider timeline;
     private Button play;
+    private Button audioButton;
+    private Payloads.AudioTracks tracks;
+    private String audioMedia = "";
+    private static long nextAudioRequest;
+    private long audioRequestId;
+    private long audioRequestedAt;
+    private boolean audioLoading;
+    private int audioOffset;
     private Button loop;
     private Button mute;
     private Button previous;
@@ -63,6 +71,7 @@ public final class CinemaScreen extends Screen {
         switch (page) {
             case PLAYER -> playerWidgets();
             case LIBRARY -> libraryWidgets();
+            case AUDIO -> audioWidgets();
         }
         initializing = false;
     }
@@ -94,8 +103,11 @@ public final class CinemaScreen extends Screen {
         button("+10 s", left + (w + gap) * 3, top + 88, w, () -> send(Payloads.Action.SKIP, "", 10_000, 0, 0), "Seek forward ten seconds", true);
         loop = button("Loop: Off", left + (w + gap) * 4, top + 88, panelWidth - (w + gap) * 4,
                 () -> { if (entry() != null) { send(Payloads.Action.LOOP, "", entry().state().looping() ? 0 : 1, 0, 0); } }, "Repeat this media for everyone", true);
-        button("Choose media…", left, top + 114, (panelWidth - 4) / 2, () -> change(Page.LIBRARY), "Choose from the server's media library", true);
-        dimensions = button("Screen: 1 × 1", left + (panelWidth + 4) / 2, top + 114, (panelWidth - 4) / 2,
+        int third = (panelWidth - 8) / 3;
+        button("Choose media…", left, top + 114, third, () -> change(Page.LIBRARY), "Choose from the server's media library", true);
+        audioButton = button("Audio…", left + third + 4, top + 114, third, () -> change(Page.AUDIO),
+                "Choose the audio language for everyone watching this screen", true);
+        dimensions = button("Screen: 1 × 1", left + (third + 4) * 2, top + 114, panelWidth - (third + 4) * 2,
                 () -> message = "Add or remove blocks to resize; maximum 40 × 40.",
                 "Build a rectangle of touching Screen Blocks facing the same way. Maximum panel: 40 × 40 blocks.", false);
         var audio = CinematicClient.PLAYBACK.settings();
@@ -134,6 +146,62 @@ public final class CinemaScreen extends Screen {
         next = button("Next", left + panelWidth - 76, bottom, 76, () -> { offset += rowCount; requestLibrary(); }, "Next media page", true);
         button("Back", left + (panelWidth - 80) / 2, bottom + 25, 80, () -> change(Page.PLAYER), "Back to playback controls", false);
         requestLibrary();
+    }
+
+    private void audioWidgets() {
+        rowCount = Math.max(1, Math.min(6, (height - top - 104) / 22));
+        for (int i = 0; i < rowCount; i++) {
+            final int index = i;
+            var row = button("", left, top + 40 + i * 22, panelWidth, () -> {
+                int trackIndex = audioOffset + index;
+                if (tracks != null && trackIndex < tracks.tracks().size()) {
+                    send(Payloads.Action.AUDIO_TRACK, audioMedia, tracks.tracks().get(trackIndex).streamIndex(), 0, 0);
+                }
+            }, "Choose this audio track for everyone", true);
+            row.visible = false; mediaRows.add(row);
+        }
+        int bottom = top + 50 + rowCount * 22;
+        previous = button("Previous", left, bottom, 76, () -> { audioOffset = Math.max(0, audioOffset - rowCount); updateAudioRows(); }, "Previous audio tracks", false);
+        next = button("Next", left + panelWidth - 76, bottom, 76, () -> { audioOffset += rowCount; updateAudioRows(); }, "Next audio tracks", false);
+        button("Retry", left + (panelWidth - 76) / 2, bottom, 76, this::requestAudio, "Reload audio tracks", false);
+        button("Back", left + (panelWidth - 80) / 2, bottom + 25, 80, () -> change(Page.PLAYER), "Back to playback controls", false);
+        if (tracks == null && !audioLoading) { requestAudio(); }
+        updateAudioRows();
+    }
+
+    private void requestAudio() {
+        if (!canControl() || entry() == null || entry().state().mediaId().isEmpty()) { return; }
+        audioMedia = entry().state().mediaId(); tracks = null; audioLoading = true; audioOffset = 0;
+        audioRequestedAt = ClientPlayback.now(); audioRequestId = ++nextAudioRequest;
+        ClientPacketDistributor.sendToServer(new Payloads.Request(Payloads.RequestKind.AUDIO_TRACKS, id, 0, audioRequestId, audioMedia));
+    }
+
+    public void audioTracks(Payloads.AudioTracks packet) {
+        if (!packet.screen().equals(id) || !packet.mediaId().equals(audioMedia) || packet.requestId() != audioRequestId
+                || entry() == null || !entry().state().mediaId().equals(packet.mediaId())) { return; }
+        tracks = packet; audioLoading = false;
+        if (page == Page.AUDIO) { updateAudioRows(); }
+    }
+
+    private void updateAudioRows() {
+        if (page != Page.AUDIO) { return; }
+        boolean permitted = canControl() && awaitingRevision < 0;
+        for (int i = 0; i < mediaRows.size(); i++) {
+            var row = mediaRows.get(i);
+            int index = audioOffset + i;
+            row.visible = !audioLoading && tracks != null && index < tracks.tracks().size();
+            if (row.visible) {
+                var track = tracks.tracks().get(index);
+                boolean selected = entry() != null && track.streamIndex() == entry().state().audioStream();
+                String label = (selected ? "Selected · " : "") + track.label(index, tracks.tracks());
+                row.setMessage(Component.literal(font.plainSubstrByWidth(label, panelWidth - 16)));
+                row.setTooltip(Tooltip.create(Component.literal(label + "\n" + track.title() + " · " + track.codec()
+                        + " · " + track.channels() + " channels" + (track.defaultTrack() ? " · Default" : "") + "\nShared by everyone watching")));
+                row.active = permitted && !selected && tracks.tracks().size() > 1;
+            }
+        }
+        previous.active = !audioLoading && audioOffset > 0;
+        next.active = !audioLoading && tracks != null && audioOffset + rowCount < tracks.tracks().size();
     }
 
     private void change(Page nextPage) { page = nextPage; message = ""; seekValue = -1; clearWidgets(); init(); }
@@ -195,6 +263,14 @@ public final class CinemaScreen extends Screen {
             statusButton.active = false;
             message = "Reopen a Screen Block to control the new panel.";
         }
+        if (current != null && !current.state().mediaId().equals(audioMedia)) {
+            tracks = null; audioLoading = false; audioMedia = current.state().mediaId(); audioOffset = 0;
+            if (canControl() && current.state().audio()) { requestAudio(); }
+        }
+        if (audioLoading && now - audioRequestedAt > 10_000) {
+            audioLoading = false;
+            tracks = new Payloads.AudioTracks(id, audioMedia, audioRequestId, List.of(), "Audio tracks did not respond. Choose Retry.");
+        }
         boolean permitted = canControl() && awaitingRevision < 0;
         controls.forEach(button -> button.active = permitted);
         if (page == Page.PLAYER && current != null) {
@@ -203,6 +279,11 @@ public final class CinemaScreen extends Screen {
             }
             statusButton.setMessage(Component.literal(font.plainSubstrByWidth(current.status(), panelWidth - 16)));
             statusButton.setTooltip(Tooltip.create(Component.literal(current.status() + "\nClick to retry playback.")));
+            audioButton.active = permitted && current.state().audio() && !audioLoading
+                    && (tracks == null || !tracks.status().isEmpty() || tracks.tracks().size() > 1);
+            audioButton.setTooltip(Tooltip.create(Component.literal(audioLoading ? "Loading audio tracks…"
+                    : !current.state().audio() ? "This media has no audio" : tracks != null && tracks.status().isEmpty() && tracks.tracks().size() < 2
+                    ? "This media has no alternative audio track" : "Choose shared audio language. Your volume and mute stay personal.")));
             play.setMessage(Component.literal(current.state().playing() ? "Pause" : "Play"));
             dimensions.setMessage(Component.literal("Screen: " + current.state().width() + " × " + current.state().height()));
             loop.setMessage(Component.literal("Loop: " + (current.state().looping() ? "On" : "Off")));
@@ -220,6 +301,7 @@ public final class CinemaScreen extends Screen {
             if (queryChanged > 0 && now - queryChanged > 300) { requestLibrary(); }
             if (loading && now - requestedAt > 10_000) { loading = false; message = "Media library did not respond. Go back and try again."; }
         }
+        if (page == Page.AUDIO) { updateAudioRows(); }
         if (!canControl()) { seekValue = -1; }
     }
 
@@ -227,7 +309,7 @@ public final class CinemaScreen extends Screen {
         extractBackground(graphics, mouseX, mouseY, delta);
         graphics.fill(left - 8, top - 4, left + panelWidth + 8, Math.min(height - 4, top + 218), 0xF0212121);
         graphics.outline(left - 8, top - 4, panelWidth + 16, Math.min(height - top, 222), 0xFF777777);
-        graphics.text(font, page == Page.PLAYER ? title : Component.literal("Choose media"), left, top + 6, 0xFFFFFFFF);
+        graphics.text(font, page == Page.PLAYER ? title : Component.literal(page == Page.AUDIO ? "Audio language" : "Choose media"), left, top + 6, 0xFFFFFFFF);
         var current = entry();
         if (page == Page.PLAYER) {
             String name = current == null || current.state().name().isEmpty() ? "No media selected" : current.state().name();
@@ -239,6 +321,12 @@ public final class CinemaScreen extends Screen {
             String status = !canControl() ? "Hold a Remote within 16 blocks" : loading ? "Loading media…"
                     : !message.isEmpty() ? message : library != null && library.total() == 0 ? "No media found. Ask an operator to check the library." : "";
             if (!status.isEmpty()) { graphics.text(font, font.plainSubstrByWidth(status, panelWidth), left, top + 46 + rowCount * 22, 0xFFFFD18A); }
+        }
+        if (page == Page.AUDIO) {
+            String status = !canControl() ? "Hold a Remote within 16 blocks" : audioLoading ? "Loading audio tracks…"
+                    : !message.isEmpty() ? message : tracks == null ? "Choose Retry to load tracks" : !tracks.status().isEmpty() ? tracks.status()
+                    : tracks.tracks().isEmpty() ? "This media has no audio" : "Shared by everyone watching";
+            graphics.text(font, font.plainSubstrByWidth(status, panelWidth), left, top + 24, 0xFFCCCCCC);
         }
         super.extractRenderState(graphics, mouseX, mouseY, delta);
         if (page == Page.PLAYER && current != null) {

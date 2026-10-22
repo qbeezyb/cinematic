@@ -18,6 +18,24 @@ public record Timeline(long durationMs, long positionMs, long anchorMs, boolean 
         return playing && durationMs > 0 && (looping || positionAt(nowMs) < durationMs);
     }
 
+    public static final long PREPARATION_MS = 1500;
+
+    public boolean preparingAt(long nowMs) { return playingAt(nowMs) && nowMs < anchorMs; }
+
+    public Timeline preparePlay(long nowMs) {
+        long position = positionAt(nowMs);
+        return new Timeline(durationMs, position == durationMs ? 0 : position,
+                nowMs + PREPARATION_MS, durationMs > 0, looping);
+    }
+
+    public Timeline prepareSeek(long targetMs, long nowMs) {
+        boolean active = playingAt(nowMs);
+        return new Timeline(durationMs, Math.clamp(targetMs, 0, durationMs),
+                active ? nowMs + PREPARATION_MS : nowMs, active, looping);
+    }
+
+    public Timeline prepare(long nowMs) { return prepareSeek(positionAt(nowMs), nowMs); }
+
     public Timeline play(long nowMs) {
         long position = positionAt(nowMs);
         return new Timeline(durationMs, position == durationMs ? 0 : position, nowMs, durationMs > 0, looping);
@@ -36,6 +54,6 @@ public record Timeline(long durationMs, long positionMs, long anchorMs, boolean 
     }
 
     public Timeline loop(boolean enabled, long nowMs) {
-        return new Timeline(durationMs, positionAt(nowMs), nowMs, playingAt(nowMs), enabled);
+        return new Timeline(durationMs, positionAt(nowMs), preparingAt(nowMs) ? anchorMs : nowMs, playingAt(nowMs), enabled);
     }
 }

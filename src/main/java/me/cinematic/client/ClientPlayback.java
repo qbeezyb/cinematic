@@ -1,6 +1,7 @@
 package me.cinematic.client;
 
 import com.mojang.blaze3d.platform.NativeImage;
+import com.mojang.blaze3d.systems.RenderSystem;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.URI;
@@ -128,7 +129,7 @@ public final class ClientPlayback {
                 .limit(4).toList();
         for (Entry entry : entries.values()) {
             if (active.contains(entry) && synced && !token.isEmpty() && accessError.isEmpty()) { entry.tick(); }
-            else { entry.closeDecoder(); }
+            else { entry.closeDecoder(); entry.releaseTexture(); }
         }
         if (now - lastFlush >= 5000) { flush(); lastFlush = now; }
     }
@@ -160,6 +161,8 @@ public final class ClientPlayback {
         private final Identifier textureId;
         private int epoch;
         private long lastResync;
+        private long previousPosition = -1;
+        private boolean presenting;
 
         private Entry(Payloads.Snapshot state) {
             this.state = state;
@@ -170,40 +173,48 @@ public final class ClientPlayback {
         public long position() {
             var snapshot = state;
             if (!synced) { return snapshot.positionMs(); }
-            return new Timeline(snapshot.durationMs(), snapshot.positionMs(), snapshot.serverTimeMs(), snapshot.playing(), snapshot.looping())
+            return new Timeline(snapshot.durationMs(), snapshot.positionMs(), snapshot.anchorMs(), snapshot.playing(), snapshot.looping())
                     .positionAt(clock.serverTime(now()));
         }
 
         private void update(Payloads.Snapshot next) {
+            boolean audioChanged = state.audioStream() != next.audioStream();
             boolean mediaChanged = !state.mediaId().equals(next.mediaId());
             long expected = position();
-            var adjusted = new Timeline(next.durationMs(), next.positionMs(), next.serverTimeMs(), next.playing(), next.looping());
+            var adjusted = new Timeline(next.durationMs(), next.positionMs(), next.anchorMs(), next.playing(), next.looping());
             boolean needsSeek = state.playing() != next.playing()
-                    || Math.abs(expected - adjusted.positionAt(clock.serverTime(now()))) > 250;
+                    || Math.abs(expected - adjusted.positionAt(clock.serverTime(now()))) > 50
+                    || (!next.playing() && state.positionMs() != next.positionMs())
+                    || (next.anchorMs() > clock.serverTime(now()) && next.anchorMs() != state.anchorMs());
             boolean resized = state.width() != next.width() || state.height() != next.height() || !state.key().equals(next.key());
             state = next;
             if (mediaChanged) { closeDecoder(); releaseTexture(); }
-            else if (decoder != null && needsSeek) { stopSound(); decoder.seek(position(), next.playing()); }
+            else if (audioChanged) { closeDecoder(); }
+            else if (decoder != null && needsSeek) { presenting = false; stopSound(); decoder.seek(position(), next.playing()); }
+            if (mediaChanged || audioChanged || needsSeek) { previousPosition = position(); }
             if (resized) { stopSound(); }
         }
 
         private void tick() {
             if (decoder == null) {
-                decoder = new MediaDecoder(baseUrl + "/media/" + state.mediaId(), token, state.videoWidth(), state.videoHeight(), this::position, state.playing());
+                decoder = new MediaDecoder(baseUrl + "/media/" + state.mediaId(), token, state.videoWidth(), state.videoHeight(), state.audioStream(), this::position, state.playing());
                 epoch = decoder.epoch();
             }
             decoder.discardBefore(position() - 50);
             if (!decoder.error().isEmpty()) { stopSound(); return; }
             if (epoch != decoder.epoch()) { stopSound(); epoch = decoder.epoch(); }
-            if (decoder.takeResync() && now() - lastResync > 1000) {
-                stopSound(); decoder.seek(position(), state.playing()); lastResync = now();
+            if (decoder.takeResync() && now() - lastResync > 5000) {
+                stopSound(); presenting = false; decoder.seek(position(), state.playing()); lastResync = now();
             }
-            if (decoder.ended() && state.looping() && state.playing()
-                    && position() < decoder.lastDecodedMs() - Math.min(250, state.durationMs() / 2)) {
-                stopSound(); decoder.seek(position(), true);
+            long position = position();
+            if (previousPosition >= 0 && state.looping() && state.playing()
+                    && position + state.durationMs() / 2 < previousPosition) {
+                stopSound(); presenting = false; decoder.seek(position, true);
             }
-            if (!state.playing()) { stopSound(); }
-            else if (state.audio() && decoder.ready() && sound == null && decoder.error().isEmpty()) {
+            previousPosition = position;
+            if (!presenting && decoder.buffered() && clock.serverTime(now()) >= state.anchorMs()) { presenting = true; }
+            if (!state.playing() || clock.serverTime(now()) < state.anchorMs()) { stopSound(); }
+            else if (state.audio() && decoder.buffered() && sound == null && decoder.error().isEmpty()) {
                 sound = new MediaSound(state, decoder);
                 sound.tick();
                 Minecraft.getInstance().getSoundManager().play(sound);
@@ -212,7 +223,8 @@ public final class ClientPlayback {
 
         /** Called during extraction, at display frequency, rather than the 20-Hz client tick. */
         public Identifier texture() {
-            if (decoder != null) {
+            RenderSystem.assertOnRenderThread();
+            if (decoder != null && (!state.playing() || presenting || clock.serverTime(now()) < state.anchorMs())) {
                 var frame = decoder.frame(position());
                 if (frame != null) {
                     if (texture == null || texture.getPixels() == null || texture.getPixels().getWidth() != frame.width() || texture.getPixels().getHeight() != frame.height()) {
@@ -221,14 +233,7 @@ public final class ClientPlayback {
                         Minecraft.getInstance().getTextureManager().register(textureId, texture);
                     }
                     var pixels = texture.getPixels();
-                    byte[] rgba = frame.rgba();
-                    for (int y = 0; y < frame.height(); y++) {
-                        for (int x = 0; x < frame.width(); x++) {
-                            int i = (y * frame.width() + x) * 4;
-                            int color = 0xFF000000 | (rgba[i] & 255) << 16 | (rgba[i + 1] & 255) << 8 | (rgba[i + 2] & 255);
-                            pixels.setPixel(x, y, color);
-                        }
-                    }
+                    pixels.getPixelBytes().put(frame.rgba());
                     texture.upload();
                 }
             }
@@ -242,15 +247,17 @@ public final class ClientPlayback {
             if (!synced || token.isEmpty()) { return "Connecting to media…"; }
             if (decoder == null) { return "Playback limited to the four nearest screens"; }
             if (!decoder.error().isEmpty()) { return decoder.error(); }
-            if (!decoder.ready()) { return decoder.stage(); }
+            if (state.playing() && clock.serverTime(now()) < state.anchorMs()) { return "Preparing…"; }
+            if (!decoder.ready() || (state.playing() && !presenting)) { return decoder.stage(); }
             return state.playing() ? "Playing" : "Paused";
         }
 
         private void stopSound() {
             if (sound != null) { Minecraft.getInstance().getSoundManager().stop(sound); sound = null; }
         }
-        private void closeDecoder() { stopSound(); if (decoder != null) { decoder.close(); decoder = null; } releaseTexture(); }
+        private void closeDecoder() { presenting = false; previousPosition = -1; stopSound(); if (decoder != null) { decoder.close(); decoder = null; } }
         private void releaseTexture() {
+            RenderSystem.assertOnRenderThread();
             if (texture != null) { Minecraft.getInstance().getTextureManager().release(textureId); texture = null; }
         }
         @Override public void close() { closeDecoder(); releaseTexture(); }
