@@ -1,0 +1,18 @@
+license="All Rights Reserved"
+[[mods]]
+modId="cinematic"
+version="${mod_version}"
+displayName="Cinematic"
+description='''Shared cinema screens with server-managed media and personal audio controls.'''
+[[dependencies.cinematic]]
+modId="neoforge"
+type="required"
+versionRange="[26.3.0.95,26.4)"
+ordering="NONE"
+side="BOTH"
+[[dependencies.cinematic]]
+modId="minecraft"
+type="required"
+versionRange="[26.3]"
+ordering="NONE"
+side="BOTH"

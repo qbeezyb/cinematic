@@ -1,0 +1,148 @@
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev' version '2.0.148'
+    id 'checkstyle'
+    id 'com.diffplug.spotless' version '7.2.1'
+}
+
+group = 'me.cinematic'
+version = mod_version
+base { archivesName = 'cinematic' }
+java.toolchain.languageVersion = JavaLanguageVersion.of(25)
+repositories { mavenCentral() }
+
+sourceSets {
+    test { java.srcDirs = ['tests/java'] }
+}
+
+neoForge {
+    version = neo_version
+    runs {
+        configureEach { jvmArgument '--add-modules=jdk.httpserver' }
+        client { client() }
+        server {
+            server()
+            programArgument '--nogui'
+        }
+        gameTestServer {
+            type = 'gameTestServer'
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'cinematic'
+        }
+    }
+    mods {
+        cinematic { sourceSet sourceSets.main }
+    }
+}
+
+configurations {
+    javacvJava
+    javacppJava
+    ffmpegJava
+    javacppNatives
+    ffmpegNatives
+}
+['javacvJava', 'javacppJava', 'ffmpegJava', 'javacppNatives', 'ffmpegNatives'].each {
+    configurations.named(it) { resolutionStrategy.activateDependencyLocking() }
+}
+def nativePlatforms = ['windows-x86_64', 'macosx-x86_64', 'macosx-arm64', 'linux-x86_64', 'linux-arm64']
+dependencies {
+    // No platform aggregate: avoid OpenCV, camera drivers, CUDA and unrelated native libraries.
+    javacvJava('org.bytedeco:javacv:1.5.14') { transitive = false }
+    javacppJava('org.bytedeco:javacpp:1.5.14') { transitive = false }
+    ffmpegJava('org.bytedeco:ffmpeg:8.1.2-1.5.14') { transitive = false }
+    compileOnly('org.bytedeco:javacv:1.5.14') { transitive = false }
+    compileOnly('org.bytedeco:javacpp:1.5.14') { transitive = false }
+    compileOnly('org.bytedeco:ffmpeg:8.1.2-1.5.14') { transitive = false }
+    nativePlatforms.each { platform ->
+        ffmpegNatives("org.bytedeco:ffmpeg:8.1.2-1.5.14:${platform}") { transitive = false }
+        javacppNatives("org.bytedeco:javacpp:1.5.14:${platform}") { transitive = false }
+    }
+    testImplementation platform('org.junit:junit-bom:6.0.3')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+// Merge each library's native resources into its own Java module. This makes JavaCPP's
+// class-relative lookup work on FML's module classloader and avoids classifier identity collisions.
+// Automatic modules also avoid JavaCV's optional integrations becoming mandatory module edges.
+def embedMediaLibrary = { String library, String revision, javaFiles, natives ->
+    tasks.register("bundle${library.capitalize()}", Jar) {
+        archiveFileName = "${library}-cinematic-${revision}.jar"
+        destinationDirectory = layout.buildDirectory.dir('embedded')
+        from({ javaFiles.collect { zipTree(it) } }) {
+            exclude 'META-INF/MANIFEST.MF', 'module-info.class', 'META-INF/versions/**/module-info.class'
+            exclude 'META-INF/*.SF', 'META-INF/*.RSA', 'META-INF/*.DSA', 'META-INF/*.EC', 'META-INF/INDEX.LIST'
+        }
+        if (natives != null) {
+            from({ natives.collect { zipTree(it) } }) {
+                include 'org/bytedeco/**'
+                exclude '**/*.class'
+            }
+            // Keep native-jar licenses and notices in an unambiguous location.
+            from({ natives.collect { zipTree(it) } }) {
+                include '**/LICENSE*', '**/COPYING*', '**/NOTICE*'
+                into 'META-INF/cinematic/native-notices'
+            }
+        }
+        manifest.attributes('Automatic-Module-Name': "org.bytedeco.${library}", 'FMLModType': 'LIBRARY')
+        preserveFileTimestamps = false
+        reproducibleFileOrder = true
+        duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    }
+}
+def embeddedMedia = [
+    embedMediaLibrary('javacv', '1.5.14', configurations.javacvJava, null),
+    embedMediaLibrary('javacpp', '1.5.14', configurations.javacppJava, configurations.javacppNatives),
+    embedMediaLibrary('ffmpeg', '8.1.2-1.5.14', configurations.ffmpegJava, configurations.ffmpegNatives)
+]
+dependencies {
+    embeddedMedia.each { bundled ->
+        implementation files(bundled)
+        jarJar files(bundled)
+    }
+}
+tasks.named('jar', Jar) {
+    from('LICENSE', 'THIRD_PARTY_NOTICES.md')
+    from('licenses') { into 'META-INF/cinematic/licenses' }
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    manifest.attributes('Implementation-Version': project.version)
+}
+tasks.named('processResources', ProcessResources) {
+    inputs.property 'mod_version', project.version
+    filesMatching('META-INF/neoforge.mods.toml') { expand mod_version: project.version }
+}
+tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8' }
+tasks.named('test', Test) { useJUnitPlatform() }
+checkstyle {
+    toolVersion = '10.26.1'
+    configFile = file('config/checkstyle/checkstyle.xml')
+}
+spotless {
+    java {
+        target 'src/**/*.java', 'tests/**/*.java'
+        trimTrailingWhitespace()
+        endWithNewline()
+    }
+    format('misc') {
+        target '*.gradle', '*.md', 'docs/*.md', '**/*.json'
+        trimTrailingWhitespace()
+        endWithNewline()
+    }
+}
+
+tasks.named('wrapper', Wrapper) {
+    gradleVersion = '9.2.1'
+    distributionType = Wrapper.DistributionType.BIN
+}
+
+tasks.register('exportMediaArtifacts', Copy) {
+    group = 'distribution'
+    description = 'Copy the original media jars, notices and repackaging recipe for release review.'
+    into layout.buildDirectory.dir('redistribution')
+    into('binaries') {
+        from configurations.javacvJava, configurations.javacppJava, configurations.ffmpegJava
+        from configurations.javacppNatives, configurations.ffmpegNatives
+    }
+    into('licenses') { from 'licenses' }
+    from 'THIRD_PARTY_NOTICES.md', 'build.gradle', 'gradle.lockfile'
+}

@@ -1,0 +1,9 @@
+# Copy settings into config/cinematic-local.toml after the first launch.
+# Restart the server after changing connection settings.
+[media]
+bindAddress = "0.0.0.0"
+port = 25566
+# Empty: use the host of the Minecraft connection with the port above.
+# For a reverse proxy: advertisedUrl = "https://media.example.com"
+advertisedUrl = ""
+audioRange = 64

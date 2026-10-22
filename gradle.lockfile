@@ -1,0 +1,6 @@
+# Initial lock state for the non-transitive media configurations.
+# Update with ./gradlew dependencies --write-locks after changing media coordinates.
+org.bytedeco:ffmpeg:8.1.2-1.5.14=ffmpegJava,ffmpegNatives
+org.bytedeco:javacpp:1.5.14=javacppJava,javacppNatives
+org.bytedeco:javacv:1.5.14=javacvJava
+empty=

@@ -1,0 +1,12 @@
+.gradle/
+.gradle-home/
+build/
+run/
+run-*/
+.idea/
+*.iml
+.DS_Store
+cinematic/
+*.log
+.env
+__pycache__/

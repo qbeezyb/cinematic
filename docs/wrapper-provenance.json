@@ -1,0 +1,24 @@
+{
+  "status": "bootstrap; official MDK binary restoration pending",
+  "gradle_distribution": "9.2.1-bin",
+  "launcher_origin": "Wrapper launcher bundled inside the locally installed Gradle 9.4.1 distribution",
+  "scripts_and_properties_origin": "NeoForgeMDKs/MDK-26.3-ModDevGradle main, retrieved during implementation",
+  "files": [
+    {
+      "path": "gradlew",
+      "sha256": "0131200b8d076267f8d1123d06db3e5a528e7b9a4c13b9580d28c07d7796d5b9"
+    },
+    {
+      "path": "gradlew.bat",
+      "sha256": "b7d08a6cc9a814530aa9c543af8b955528c0a4a20f02eb889d81b4e16f8e8493"
+    },
+    {
+      "path": "gradle/wrapper/gradle-wrapper.jar",
+      "sha256": "55243ef57851f12b070ad14f7f5bb8302daceeebc5bce5ece5fa6edb23e1145c"
+    },
+    {
+      "path": "gradle/wrapper/gradle-wrapper.properties",
+      "sha256": "9efd7948359a68d9c80aa8d5df1717af1415c440b59d493040d3cfbd13885383"
+    }
+  ]
+}

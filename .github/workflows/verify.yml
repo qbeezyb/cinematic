@@ -1,0 +1,45 @@
+name: Verify
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  packaged:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-15-intel, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Restore official MDK wrapper
+        run: python scripts/restore-wrapper.py --ref main
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Compile, lint, and test
+        run: ./gradlew --no-daemon check build
+      - name: Load actual embedded natives
+        run: python scripts/test-packaged.py build/libs/cinematic-0.1.0.jar
+      - name: Run NeoForge GameTests
+        if: matrix.os == 'ubuntu-latest'
+        run: ./gradlew --no-daemon runGameTestServer
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validation-${{ matrix.os }}
+          path: |
+            build/reports/
+            build/test-results/
+            docs/wrapper-provenance.json
