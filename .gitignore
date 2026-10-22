@@ -6,7 +6,7 @@ run-*/
 .idea/
 *.iml
 .DS_Store
-cinematic/
+/cinematic/
 *.log
 .env
 __pycache__/

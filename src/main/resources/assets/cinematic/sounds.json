@@ -1,0 +1,11 @@
+{
+  "media": {
+    "sounds": [
+      {
+        "name": "cinematic:media",
+        "stream": true,
+        "attenuation_distance": 64
+      }
+    ]
+  }
+}

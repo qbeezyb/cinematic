@@ -1,0 +1,11 @@
+{
+  "block.cinematic.screen_controller": "Screen Controller",
+  "item.cinematic.remote": "Remote",
+  "itemGroup.cinematic": "Cinematic",
+  "screen.cinematic.title": "Cinematic",
+  "cinematic.configuration.media": "Media service",
+  "cinematic.configuration.bindAddress": "Bind address",
+  "cinematic.configuration.port": "Media port",
+  "cinematic.configuration.advertisedUrl": "Advertised media URL",
+  "cinematic.configuration.audioRange": "Audio range"
+}

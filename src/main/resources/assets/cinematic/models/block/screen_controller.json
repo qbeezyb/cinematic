@@ -1,0 +1,8 @@
+{
+  "parent": "minecraft:block/orientable",
+  "textures": {
+    "top": "cinematic:block/controller_side",
+    "front": "cinematic:block/controller_front",
+    "side": "cinematic:block/controller_side"
+  }
+}

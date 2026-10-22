@@ -1,0 +1,7 @@
+{
+  "type": "minecraft:function",
+  "function": "cinematic:dimensions",
+  "environment": "minecraft:default",
+  "structure": "cinematic:empty",
+  "max_ticks": 100
+}

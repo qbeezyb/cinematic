@@ -1,0 +1,13 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "category": "misc",
+  "ingredients": [
+    "minecraft:iron_ingot",
+    "minecraft:redstone",
+    "minecraft:stone_button"
+  ],
+  "result": {
+    "id": "cinematic:remote",
+    "count": 1
+  }
+}

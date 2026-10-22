@@ -1,0 +1,17 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "pattern": [
+    "CCC",
+    "CGC",
+    "CCC"
+  ],
+  "key": {
+    "C": "minecraft:black_concrete",
+    "G": "minecraft:glass"
+  },
+  "result": {
+    "id": "cinematic:screen_controller",
+    "count": 1
+  }
+}
