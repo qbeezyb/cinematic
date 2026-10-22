@@ -3,7 +3,12 @@ license="All Rights Reserved"
 modId="cinematic"
 version="${mod_version}"
 displayName="Cinematic"
-description='''Shared cinema screens with server-managed media and personal audio controls.'''
+logoFile="cinematic-logo.png"
+description='''Cinematic brings synchronized video and audio playback to Minecraft. Build a display from connected Screen Blocks: any flat, filled rectangle of blocks facing the same direction automatically becomes one screen, can be resized, and stays in sync for everyone watching.
+
+Use the Remote from anywhere on the server to find and select a screen, browse or search the server's media library, play, pause, stop, seek, skip, loop, and choose an audio language. Right-click a Screen Block without the Remote to adjust your own volume or mute that screen.
+
+Cinematic supports MP4, MKV, WebM, AVI, MOV, M4A, MP3, WAV, Ogg, and FLAC files when their codecs are supported by the bundled FFmpeg build. Media stays on the server, and players do not need to install VLC or FFmpeg separately.'''
 [[dependencies.cinematic]]
 modId="neoforge"
 type="required"
