@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import me.cinematic.Cinematic;
+import me.cinematic.core.PanelGeometry;
 import me.cinematic.network.Payloads;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.Button;
@@ -16,7 +17,7 @@ import net.neoforged.neoforge.client.network.ClientPacketDistributor;
 
 /** Vanilla widgets provide keyboard focus, narration, pressed/disabled states and tooltips. */
 public final class CinemaScreen extends Screen {
-    private enum Page { PLAYER, LIBRARY, SIZE }
+    private enum Page { PLAYER, LIBRARY }
     private final UUID id;
     private Page page = Page.PLAYER;
     private final List<Button> controls = new ArrayList<>();
@@ -27,12 +28,10 @@ public final class CinemaScreen extends Screen {
     private Button mute;
     private Button previous;
     private Button next;
-    private Button apply;
+    private Button dimensions;
     private Button statusButton;
     private long timelineDuration;
     private EditBox search;
-    private EditBox screenWidth;
-    private EditBox screenHeight;
     private Payloads.Library library;
     private String query = "";
     private String message = "";
@@ -57,14 +56,13 @@ public final class CinemaScreen extends Screen {
     @Override protected void init() {
         initializing = true;
         controls.clear(); mediaRows.clear();
-        timeline = null; search = null; screenWidth = null; screenHeight = null;
+        timeline = null; search = null;
         panelWidth = Math.min(420, width - 24);
         left = (width - panelWidth) / 2;
         top = Math.max(6, (height - 218) / 2);
         switch (page) {
             case PLAYER -> playerWidgets();
             case LIBRARY -> libraryWidgets();
-            case SIZE -> sizeWidgets();
         }
         initializing = false;
     }
@@ -97,7 +95,9 @@ public final class CinemaScreen extends Screen {
         loop = button("Loop: Off", left + (w + gap) * 4, top + 88, panelWidth - (w + gap) * 4,
                 () -> { if (entry() != null) { send(Payloads.Action.LOOP, "", entry().state().looping() ? 0 : 1, 0, 0); } }, "Repeat this media for everyone", true);
         button("Choose media…", left, top + 114, (panelWidth - 4) / 2, () -> change(Page.LIBRARY), "Choose from the server's media library", true);
-        button("Screen size…", left + (panelWidth + 4) / 2, top + 114, (panelWidth - 4) / 2, () -> change(Page.SIZE), "Set width and height independently, from 1 to 40 blocks", true);
+        dimensions = button("Screen: 1 × 1", left + (panelWidth + 4) / 2, top + 114, (panelWidth - 4) / 2,
+                () -> message = "Add or remove blocks to resize; maximum 40 × 40.",
+                "Build a rectangle of touching Screen Blocks facing the same way. Maximum panel: 40 × 40 blocks.", false);
         var audio = CinematicClient.PLAYBACK.settings();
         addRenderableWidget(new ExtendedSlider(left, top + 150, panelWidth - 90, 20, Component.literal("Volume: "), Component.literal("%"),
                 0, 100, audio.level(id) * 100, 1, 0, true) {
@@ -136,34 +136,6 @@ public final class CinemaScreen extends Screen {
         requestLibrary();
     }
 
-    private void sizeWidgets() {
-        var current = entry();
-        screenWidth = dimensionField("Width in blocks");
-        screenWidth.setX(left); screenWidth.setY(top + 52);
-        screenWidth.setValue(current == null ? "1" : Integer.toString(current.state().width()));
-        screenWidth.setTooltip(Tooltip.create(Component.literal("Width: 1–40 blocks, extending right when facing the screen")));
-        screenHeight = dimensionField("Height in blocks");
-        screenHeight.setX(left + panelWidth - 96); screenHeight.setY(top + 52);
-        screenHeight.setValue(current == null ? "1" : Integer.toString(current.state().height()));
-        screenHeight.setTooltip(Tooltip.create(Component.literal("Height: 1–40 blocks, extending upward from the controller")));
-        apply = button("Apply", left, top + 106, (panelWidth - 8) / 2, () -> {
-            send(Payloads.Action.RESIZE, "", 0, number(screenWidth), number(screenHeight));
-            change(Page.PLAYER);
-        }, "Resize this screen for everyone", true);
-        button("Cancel", left + (panelWidth + 8) / 2, top + 106, (panelWidth - 8) / 2, () -> change(Page.PLAYER), "Keep the current size", false);
-    }
-
-    private EditBox dimensionField(String label) {
-        var field = addRenderableWidget(new EditBox(font, 96, 20, Component.literal(label)) {
-            @Override public void insertText(String input) {
-                if (input.matches("[0-9]*")) { super.insertText(input); }
-            }
-        });
-        field.setMaxLength(2);
-        return field;
-    }
-
-    private static int number(EditBox box) { try { return Integer.parseInt(box.getValue()); } catch (NumberFormatException e) { return 0; } }
     private void change(Page nextPage) { page = nextPage; message = ""; seekValue = -1; clearWidgets(); init(); }
     private void select(int index) {
         if (library != null && index < library.items().size()) {
@@ -203,7 +175,8 @@ public final class CinemaScreen extends Screen {
         var current = entry();
         return player != null && current != null && minecraft.level != null
                 && current.state().key().dimension().equals(minecraft.level.dimension().identifier().toString())
-                && current.state().key().distanceSquared(player.getX(), player.getY(), player.getZ()) <= 256
+                && PanelGeometry.distanceSquared(current.state().key(), current.state().facing(), current.state().width(), current.state().height(),
+                        player.getX(), player.getY(), player.getZ()) <= 256
                 && (player.getMainHandItem().is(Cinematic.REMOTE.get()) || player.getOffhandItem().is(Cinematic.REMOTE.get()));
     }
 
@@ -217,6 +190,11 @@ public final class CinemaScreen extends Screen {
         var current = entry();
         long now = ClientPlayback.now();
         if (awaitingRevision >= 0 && (current == null || current.state().revision() != awaitingRevision || now - controlSentAt > 2000)) { awaitingRevision = -1; }
+        if (current == null && page == Page.PLAYER) {
+            statusButton.setMessage(Component.literal("Screen structure changed"));
+            statusButton.active = false;
+            message = "Reopen a Screen Block to control the new panel.";
+        }
         boolean permitted = canControl() && awaitingRevision < 0;
         controls.forEach(button -> button.active = permitted);
         if (page == Page.PLAYER && current != null) {
@@ -226,6 +204,7 @@ public final class CinemaScreen extends Screen {
             statusButton.setMessage(Component.literal(font.plainSubstrByWidth(current.status(), panelWidth - 16)));
             statusButton.setTooltip(Tooltip.create(Component.literal(current.status() + "\nClick to retry playback.")));
             play.setMessage(Component.literal(current.state().playing() ? "Pause" : "Play"));
+            dimensions.setMessage(Component.literal("Screen: " + current.state().width() + " × " + current.state().height()));
             loop.setMessage(Component.literal("Loop: " + (current.state().looping() ? "On" : "Off")));
             mute.setMessage(Component.literal("Mute: " + (CinematicClient.PLAYBACK.settings().muted(id) ? "On" : "Off")));
             timeline.active = permitted && current.state().durationMs() > 0;
@@ -240,9 +219,6 @@ public final class CinemaScreen extends Screen {
             next.active = permitted && !loading && library != null && offset + rowCount < library.total();
             if (queryChanged > 0 && now - queryChanged > 300) { requestLibrary(); }
             if (loading && now - requestedAt > 10_000) { loading = false; message = "Media library did not respond. Go back and try again."; }
-        } else if (page == Page.SIZE) {
-            int w = number(screenWidth), h = number(screenHeight);
-            apply.active = permitted && w >= 1 && w <= 40 && h >= 1 && h <= 40;
         }
         if (!canControl()) { seekValue = -1; }
     }
@@ -251,7 +227,7 @@ public final class CinemaScreen extends Screen {
         extractBackground(graphics, mouseX, mouseY, delta);
         graphics.fill(left - 8, top - 4, left + panelWidth + 8, Math.min(height - 4, top + 218), 0xF0212121);
         graphics.outline(left - 8, top - 4, panelWidth + 16, Math.min(height - top, 222), 0xFF777777);
-        graphics.text(font, page == Page.PLAYER ? title : Component.literal(page == Page.LIBRARY ? "Choose media" : "Screen size"), left, top + 6, 0xFFFFFFFF);
+        graphics.text(font, page == Page.PLAYER ? title : Component.literal("Choose media"), left, top + 6, 0xFFFFFFFF);
         var current = entry();
         if (page == Page.PLAYER) {
             String name = current == null || current.state().name().isEmpty() ? "No media selected" : current.state().name();
@@ -263,11 +239,6 @@ public final class CinemaScreen extends Screen {
             String status = !canControl() ? "Hold a Remote within 16 blocks" : loading ? "Loading media…"
                     : !message.isEmpty() ? message : library != null && library.total() == 0 ? "No media found. Ask an operator to check the library." : "";
             if (!status.isEmpty()) { graphics.text(font, font.plainSubstrByWidth(status, panelWidth), left, top + 46 + rowCount * 22, 0xFFFFD18A); }
-        } else {
-            graphics.text(font, Component.literal("Width (blocks)"), left, top + 36, 0xFFFFFFFF);
-            graphics.text(font, Component.literal("Height (blocks)"), left + panelWidth - 96, top + 36, 0xFFFFFFFF);
-            String status = !canControl() ? "Hold a Remote within 16 blocks" : "Each dimension must be 1–40 blocks";
-            graphics.text(font, Component.literal(status), left, top + 84, 0xFFCCCCCC);
         }
         super.extractRenderState(graphics, mouseX, mouseY, delta);
         if (page == Page.PLAYER && current != null) {

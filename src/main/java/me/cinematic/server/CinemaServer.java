@@ -3,13 +3,16 @@ package me.cinematic.server;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.URI;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -19,7 +22,9 @@ import me.cinematic.CinemaConfig;
 import me.cinematic.Cinematic;
 import me.cinematic.block.ScreenControllerBlock;
 import me.cinematic.core.ControlPolicy;
+import me.cinematic.core.PanelGeometry;
 import me.cinematic.core.ScreenKey;
+import me.cinematic.core.ScreenLayout;
 import me.cinematic.core.ScreenSession;
 import me.cinematic.core.SessionStore;
 import me.cinematic.media.Credentials;
@@ -52,6 +57,8 @@ public final class CinemaServer implements AutoCloseable {
     private final MinecraftServer server;
     private final Map<UUID, ScreenSession> screens = new HashMap<>();
     private final Map<ScreenKey, ScreenSession> positions = new HashMap<>();
+    private final Map<ScreenKey, Integer> pendingWalls = new HashMap<>();
+    private final Set<UUID> verifiedWalls = new HashSet<>();
     private final Map<UUID, long[]> requestRates = new HashMap<>();
     private final Map<UUID, Long> accessIssued = new HashMap<>();
     private final Credentials credentials = new Credentials(System::currentTimeMillis);
@@ -100,6 +107,8 @@ public final class CinemaServer implements AutoCloseable {
                     throw new IOException("Duplicate screen identity in saved sessions");
                 }
             }
+            // Index saved anchors first. Chunks loading establish physical membership; old
+            // virtual dimensions must not claim another independent controller's blocks.
         } catch (IOException e) {
             persistenceHealthy = false;
             screens.clear(); positions.clear();
@@ -135,21 +144,120 @@ public final class CinemaServer implements AutoCloseable {
     }
 
     public ScreenSession ensure(ServerLevel level, BlockPos pos, BlockState state) {
-        ScreenKey key = new ScreenKey(level.dimension().identifier().toString(), pos.getX(), pos.getY(), pos.getZ());
+        ScreenKey key = key(level, pos);
         ScreenSession session = positions.get(key);
         if (session == null) {
             int facing = state.getValue(ScreenControllerBlock.FACING).get2DDataValue();
-            session = new ScreenSession(UUID.randomUUID(), key, facing);
-            positions.put(key, session);
-            screens.put(session.id(), session);
+            blocksChanged(level, pos, facing);
+            session = positions.get(key);
+            if (session == null) {
+                // A partial chunk load defers discovery. Reuse a persisted panel containing
+                // this block instead of creating an independent screen on one of its tiles.
+                session = screens.values().stream().filter(s -> s.facing() == facing && s.key().dimension().equals(key.dimension()))
+                        .filter(s -> s.distanceSquared(pos.getX() + .5, pos.getY() + .5, pos.getZ() + .5) == 0).findFirst().orElse(null);
+            }
+            if (session == null) {
+                session = new ScreenSession(UUID.randomUUID(), key, facing);
+                positions.put(key, session);
+                screens.put(session.id(), session);
+            }
         }
         return session;
     }
 
-    public void remove(ServerLevel level, BlockPos pos) {
-        ScreenKey key = new ScreenKey(level.dimension().identifier().toString(), pos.getX(), pos.getY(), pos.getZ());
-        ScreenSession previous = positions.remove(key);
-        if (previous != null) { screens.remove(previous.id()); }
+    private static ScreenKey key(ServerLevel level, BlockPos pos) {
+        return new ScreenKey(level.dimension().identifier().toString(), pos.getX(), pos.getY(), pos.getZ());
+    }
+
+    private static BlockPos pos(ScreenKey key) { return new BlockPos(key.x(), key.y(), key.z()); }
+
+    /** Rebuild only coplanar, equally-facing blocks. Never load a chunk to discover a wall. */
+    public void blocksChanged(ServerLevel level, BlockPos changedPos, int facing) {
+        ScreenKey changed = key(level, changedPos);
+        if (!rebuildWall(level, changed, facing)) { pendingWalls.put(changed, facing); }
+        else { pendingWalls.remove(changed); }
+    }
+
+    public void blockLoaded(ServerLevel level, BlockPos pos, int facing) {
+        ScreenSession known = positions.get(key(level, pos));
+        if (known == null || !verifiedWalls.contains(known.id())) { blocksChanged(level, pos, facing); }
+    }
+
+    private record WallPanel(ScreenKey origin, int width, int height, List<ScreenKey> members) {}
+
+    private boolean rebuildWall(ServerLevel level, ScreenKey changed, int facing) {
+        var seeds = List.of(changed, PanelGeometry.block(changed, facing, -1, 0), PanelGeometry.block(changed, facing, 1, 0),
+                PanelGeometry.block(changed, facing, 0, -1), PanelGeometry.block(changed, facing, 0, 1));
+        var visited = new HashSet<ScreenKey>();
+        var panels = new ArrayList<WallPanel>();
+        var affected = new HashSet<ScreenSession>();
+        ScreenSession previous = positions.get(changed);
+        if (previous != null) { affected.add(previous); }
+        for (ScreenKey seed : seeds) {
+            if (visited.contains(seed)) { continue; }
+            var queue = new ArrayDeque<ScreenLayout.Cell>();
+            var cells = new HashSet<ScreenLayout.Cell>();
+            queue.add(new ScreenLayout.Cell(0, 0));
+            while (!queue.isEmpty()) {
+                var cell = queue.removeFirst();
+                ScreenKey member = PanelGeometry.block(seed, facing, cell.right(), cell.up());
+                if (!visited.add(member)) { continue; }
+                BlockPos block = pos(member);
+                if (level.isOutsideBuildHeight(block)) { continue; }
+                if (!level.hasChunkAt(block)) { return false; }
+                BlockState state = level.getBlockState(block);
+                if (!state.is(Cinematic.CONTROLLER.get()) || state.getValue(ScreenControllerBlock.FACING).get2DDataValue() != facing) { continue; }
+                cells.add(cell);
+                if (cells.size() > 6400) { return false; }
+                ScreenSession old = positions.get(member);
+                if (old != null) { affected.add(old); }
+                queue.add(new ScreenLayout.Cell(cell.right() - 1, cell.up()));
+                queue.add(new ScreenLayout.Cell(cell.right() + 1, cell.up()));
+                queue.add(new ScreenLayout.Cell(cell.right(), cell.up() - 1));
+                queue.add(new ScreenLayout.Cell(cell.right(), cell.up() + 1));
+            }
+            for (var rectangle : ScreenLayout.rectangles(cells)) {
+                ScreenKey origin = PanelGeometry.block(seed, facing, rectangle.origin().right(), rectangle.origin().up());
+                var blocks = new ArrayList<ScreenKey>();
+                for (int x = 0; x < rectangle.width(); x++) {
+                    for (int y = 0; y < rectangle.height(); y++) { blocks.add(PanelGeometry.block(origin, facing, x, y)); }
+                }
+                panels.add(new WallPanel(origin, rectangle.width(), rectangle.height(), blocks));
+            }
+        }
+        // Pick all donors before moving any anchors. Keep the active/selected screen on merge.
+        long wallTime = now();
+        Comparator<ScreenSession> priority = Comparator.<ScreenSession>comparingInt(s -> s.timeline().playingAt(wallTime) ? 0 : s.mediaId().isEmpty() ? 2 : 1)
+                .thenComparing(s -> s.id().toString());
+        var used = new HashSet<UUID>();
+        var assignments = new ArrayList<ScreenSession>();
+        for (WallPanel panel : panels) {
+            var candidates = panel.members().stream().map(positions::get).filter(java.util.Objects::nonNull)
+                    .filter(s -> s.facing() == facing).distinct().sorted(priority).toList();
+            ScreenSession donor = candidates.stream().filter(s -> !used.contains(s.id())).findFirst().orElse(null);
+            ScreenSession assigned;
+            if (donor != null) {
+                assigned = donor;
+                used.add(donor.id());
+            } else if (!candidates.isEmpty()) {
+                donor = candidates.getFirst();
+                assigned = new ScreenSession(UUID.randomUUID(), panel.origin(), facing, panel.width(), panel.height(),
+                        donor.mediaId(), donor.timeline(), donor.revision() + 1);
+            } else { assigned = new ScreenSession(UUID.randomUUID(), panel.origin(), facing); }
+            assignments.add(assigned);
+        }
+        positions.entrySet().removeIf(entry -> affected.contains(entry.getValue()));
+        affected.forEach(s -> { screens.remove(s.id()); verifiedWalls.remove(s.id()); });
+        for (int i = 0; i < panels.size(); i++) {
+            WallPanel panel = panels.get(i);
+            ScreenSession assigned = assignments.get(i);
+            assigned.reshape(panel.origin(), panel.width(), panel.height());
+            screens.put(assigned.id(), assigned);
+            verifiedWalls.add(assigned.id());
+            panel.members().forEach(member -> positions.put(member, assigned));
+        }
+        pendingWalls.entrySet().removeIf(entry -> entry.getValue() == facing && visited.contains(entry.getKey()));
+        return true;
     }
 
     public void open(ServerPlayer player, BlockPos pos) {
@@ -209,7 +317,7 @@ public final class CinemaServer implements AutoCloseable {
                 if (entry == null) { throw new IllegalArgumentException("Media missing or invalid; ask an operator to run /cinematic reload"); }
                 screen.select(entry.id(), entry.durationMs(), now);
             }
-            case RESIZE -> screen.resize(control.width(), control.height());
+            case RESIZE -> throw new IllegalArgumentException("Screen size follows the blocks you build. Add or remove Screen Blocks to resize.");
             case PLAY_PAUSE -> {
                 if (library == null || library.get(screen.mediaId()) == null) { throw new IllegalArgumentException("Select an available media file first"); }
                 screen.updateTimeline(screen.timeline().playingAt(now) ? screen.timeline().pause(now) : screen.timeline().play(now));
@@ -257,14 +365,17 @@ public final class CinemaServer implements AutoCloseable {
         tick++;
         // Inspect loaded blocks only; sessions in unloaded chunks keep their monotonic timelines.
         if (tick % 20 == 0) {
-            var removed = new ArrayList<ScreenSession>();
-            for (var screen : screens.values()) {
+            var changes = new HashMap<>(pendingWalls);
+            for (var screen : List.copyOf(screens.values())) {
                 var level = server.getLevel(ResourceKey.create(Registries.DIMENSION, Identifier.parse(screen.key().dimension())));
                 if (level == null) { continue; }
                 var pos = new BlockPos(screen.key().x(), screen.key().y(), screen.key().z());
-                if (level.hasChunkAt(pos) && !level.getBlockState(pos).is(Cinematic.CONTROLLER.get())) { removed.add(screen); }
+                if (level.hasChunkAt(pos) && !level.getBlockState(pos).is(Cinematic.CONTROLLER.get())) { changes.put(screen.key(), screen.facing()); }
             }
-            removed.forEach(s -> { screens.remove(s.id()); positions.remove(s.key()); });
+            changes.entrySet().stream().limit(64).forEach(change -> {
+                var level = server.getLevel(ResourceKey.create(Registries.DIMENSION, Identifier.parse(change.getKey().dimension())));
+                if (level != null && level.hasChunkAt(pos(change.getKey()))) { blocksChanged(level, pos(change.getKey()), change.getValue()); }
+            });
             server.getPlayerList().getPlayers().forEach(this::sendNearby);
         }
         if (tick % 100 == 0) { save(); }
@@ -273,8 +384,8 @@ public final class CinemaServer implements AutoCloseable {
     private void sendNearby(ServerPlayer player) {
         String dimension = player.level().dimension().identifier().toString();
         var nearby = screens.values().stream().filter(s -> s.key().dimension().equals(dimension))
-                .filter(s -> s.key().distanceSquared(player.getX(), player.getY(), player.getZ()) < 256 * 256)
-                .sorted(Comparator.comparingDouble(s -> s.key().distanceSquared(player.getX(), player.getY(), player.getZ())))
+                .filter(s -> s.distanceSquared(player.getX(), player.getY(), player.getZ()) < 256 * 256)
+                .sorted(Comparator.comparingDouble(s -> s.distanceSquared(player.getX(), player.getY(), player.getZ())))
                 .limit(64).map(this::snapshot).toList();
         PacketDistributor.sendToPlayer(player, new Payloads.Snapshots(nearby));
     }

@@ -26,6 +26,8 @@ The service implements authenticated GET and HEAD, single byte ranges, suffix/op
 | JDK HTTP module unavailable | Add `--add-modules=jdk.httpserver` to `user_jvm_args.txt` on the dedicated server or the launcher's JVM arguments on the client, then restart. |
 | Library is empty or reports invalid files | Confirm the working directory, extensions, permissions, and codecs; inspect the scan log and run `/cinematic reload`. |
 | Selected media missing | Reload after copying/replacing media, then choose the file again. |
+| Media timed out / opening or seeking never finishes | Check the advertised URL and media port from the client. The status button identifies opening, seeking, or first-frame buffering; a stalled attempt times out after 30 seconds. Click it to retry. |
+| Preview appears but timeline does not advance | Newly selected media starts paused. Hold a Remote and press Play. |
 | Connecting or playback failed | Confirm the advertised host/port is reachable from the viewing client. A reverse proxy must forward Authorization and byte ranges. Click the playback status button or reopen the controller to retry. |
 | Native loader failure | Confirm the OS/architecture is included, the JDK is 25, and the JavaCPP cache is writable. On Linux use a compatible glibc environment. Do not install a separate player as a workaround; test the embedded JARs with `scripts/test-packaged.py`. |
 | Buffering or repeated resync | Check bandwidth, file seekability, and CPU load. Try a conventional 1080p/30 MP4 and fewer nearby screens. HTTP errors and decoder exceptions do not stop Minecraft. |

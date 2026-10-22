@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.UUID;
 import me.cinematic.Cinematic;
 import me.cinematic.core.ClockSync;
+import me.cinematic.core.PanelGeometry;
 import me.cinematic.core.PersonalAudio;
 import me.cinematic.core.ScreenKey;
 import me.cinematic.core.Timeline;
@@ -122,7 +123,8 @@ public final class ClientPlayback {
             ClientPacketDistributor.sendToServer(new Payloads.Request(Payloads.RequestKind.ACCESS, Payloads.NO_SCREEN, 0, now, ""));
         }
         var active = entries.values().stream().filter(entry -> !entry.state.mediaId().isEmpty() && entry.state.error().isEmpty())
-                .sorted(Comparator.comparingDouble(entry -> entry.state.key().distanceSquared(minecraft.player.getX(), minecraft.player.getY(), minecraft.player.getZ())))
+                .sorted(Comparator.comparingDouble(entry -> PanelGeometry.distanceSquared(entry.state.key(), entry.state.facing(), entry.state.width(), entry.state.height(),
+                        minecraft.player.getX(), minecraft.player.getY(), minecraft.player.getZ())))
                 .limit(4).toList();
         for (Entry entry : entries.values()) {
             if (active.contains(entry) && synced && !token.isEmpty() && accessError.isEmpty()) { entry.tick(); }
@@ -178,7 +180,7 @@ public final class ClientPlayback {
             var adjusted = new Timeline(next.durationMs(), next.positionMs(), next.serverTimeMs(), next.playing(), next.looping());
             boolean needsSeek = state.playing() != next.playing()
                     || Math.abs(expected - adjusted.positionAt(clock.serverTime(now()))) > 250;
-            boolean resized = state.width() != next.width() || state.height() != next.height();
+            boolean resized = state.width() != next.width() || state.height() != next.height() || !state.key().equals(next.key());
             state = next;
             if (mediaChanged) { closeDecoder(); releaseTexture(); }
             else if (decoder != null && needsSeek) { stopSound(); decoder.seek(position(), next.playing()); }
@@ -240,7 +242,7 @@ public final class ClientPlayback {
             if (!synced || token.isEmpty()) { return "Connecting to media…"; }
             if (decoder == null) { return "Playback limited to the four nearest screens"; }
             if (!decoder.error().isEmpty()) { return decoder.error(); }
-            if (!decoder.ready()) { return "Buffering…"; }
+            if (!decoder.ready()) { return decoder.stage(); }
             return state.playing() ? "Playing" : "Paused";
         }
 

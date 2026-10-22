@@ -48,6 +48,14 @@ public final class CinemaGameTests {
             helper.setBlock(pos, Cinematic.CONTROLLER.get().defaultBlockState().setValue(ScreenControllerBlock.FACING, facing));
             helper.assertBlockProperty(pos, ScreenControllerBlock.FACING, facing);
             helper.assertTrue(helper.getLevel().getBlockEntity(helper.absolutePos(pos)) instanceof ScreenBlockEntity, "Controller has its block entity");
+            helper.setBlock(pos.above(), Cinematic.CONTROLLER.get().defaultBlockState().setValue(ScreenControllerBlock.FACING, facing));
+            var level = helper.getLevel();
+            var service = CinemaServer.get(level.getServer());
+            var lower = helper.absolutePos(pos);
+            var upper = lower.above();
+            var panel = service.ensure(level, lower, level.getBlockState(lower));
+            var child = service.ensure(level, upper, level.getBlockState(upper));
+            helper.assertTrue(panel.id().equals(child.id()) && panel.width() == 1 && panel.height() == 2, "Blocks connect for facing " + facing);
         }
         helper.succeed();
     }
@@ -67,7 +75,7 @@ public final class CinemaGameTests {
         var service = CinemaServer.get(level.getServer());
         helper.setBlock(relative, Cinematic.CONTROLLER.get());
         var original = service.ensure(level, pos, level.getBlockState(pos));
-        original.resize(12, 7);
+        original.select("a".repeat(32), 60_000, 0);
         helper.setBlock(relative, net.minecraft.world.level.block.Blocks.AIR);
         helper.setBlock(relative, Cinematic.CONTROLLER.get());
         var replacement = service.ensure(level, pos, level.getBlockState(pos));
@@ -84,27 +92,50 @@ public final class CinemaGameTests {
 
     private static void dimensions(GameTestHelper helper) {
         BlockPos relative = new BlockPos(1, 1, 1);
-        helper.setBlock(relative, Cinematic.CONTROLLER.get());
+        helper.setBlock(relative, Cinematic.CONTROLLER.get().defaultBlockState().setValue(ScreenControllerBlock.FACING, Direction.SOUTH));
         var level = helper.getLevel();
         var service = CinemaServer.get(level.getServer());
         var screen = service.ensure(level, helper.absolutePos(relative), level.getBlockState(helper.absolutePos(relative)));
         helper.assertTrue(screen.width() == 1 && screen.height() == 1, "Screens start at 1×1");
-        screen.resize(40, 32);
-        helper.assertTrue(screen.width() == 40 && screen.height() == 32, "Width and height are independent");
-        helper.assertBlockPresent(net.minecraft.world.level.block.Blocks.AIR, new BlockPos(1, 2, 1));
-        boolean rejected = false;
-        try { screen.resize(41, 0); } catch (IllegalArgumentException expected) { rejected = true; }
-        helper.assertTrue(rejected && screen.width() == 40 && screen.height() == 32, "Invalid resize leaves dimensions intact");
+        screen.select("a".repeat(32), 60_000, 0);
+        var identity = screen.id();
+        var facing = level.getBlockState(helper.absolutePos(relative)).getValue(ScreenControllerBlock.FACING);
+        var right = facing.getCounterClockWise();
+        for (int x = 0; x < 3; x++) {
+            for (int y = 0; y < 2; y++) {
+                helper.setBlock(relative.relative(right, x).above(y), Cinematic.CONTROLLER.get().defaultBlockState().setValue(ScreenControllerBlock.FACING, facing));
+            }
+        }
+        var far = helper.absolutePos(relative.relative(right, 2).above());
+        var joined = service.ensure(level, far, level.getBlockState(far));
+        helper.assertTrue(joined.id().equals(identity) && joined.width() == 3 && joined.height() == 2, "Touching blocks share one 3×2 screen");
+        helper.assertTrue(joined.mediaId().equals("a".repeat(32)), "Adding blocks preserves media selection");
+        helper.setBlock(relative.relative(right, 1), net.minecraft.world.level.block.Blocks.AIR);
+        joined = service.ensure(level, far, level.getBlockState(far));
+        helper.assertTrue(joined.width() * joined.height() < 6, "Removing a block splits the panel without drawing across the hole");
+        helper.setBlock(relative.relative(right, 1), Cinematic.CONTROLLER.get().defaultBlockState().setValue(ScreenControllerBlock.FACING, facing));
+        joined = service.ensure(level, far, level.getBlockState(far));
+        helper.assertTrue(joined.width() == 3 && joined.height() == 2, "Filling the hole reconnects the screen");
+        var extra = relative.relative(right, 3);
+        helper.setBlock(extra, Cinematic.CONTROLLER.get().defaultBlockState().setValue(ScreenControllerBlock.FACING, facing.getOpposite()));
+        var separatePos = helper.absolutePos(extra);
+        var separate = service.ensure(level, separatePos, level.getBlockState(separatePos));
+        helper.assertTrue(!separate.id().equals(joined.id()) && separate.width() == 1, "Different facing directions do not connect");
         helper.succeed();
     }
 
     private static void persistence(GameTestHelper helper) {
         BlockPos relative = new BlockPos(1, 1, 1);
-        helper.setBlock(relative, Cinematic.CONTROLLER.get());
+        helper.setBlock(relative, Cinematic.CONTROLLER.get().defaultBlockState().setValue(ScreenControllerBlock.FACING, Direction.SOUTH));
         var level = helper.getLevel();
         var screen = CinemaServer.get(level.getServer()).ensure(level, helper.absolutePos(relative), level.getBlockState(helper.absolutePos(relative)));
         screen.select("f".repeat(32), 60_000, 0);
-        screen.resize(12, 7);
+        var state = level.getBlockState(helper.absolutePos(relative));
+        var right = state.getValue(ScreenControllerBlock.FACING).getCounterClockWise();
+        for (int x = 0; x < 3; x++) {
+            for (int y = 0; y < 2; y++) { helper.setBlock(relative.relative(right, x).above(y), state); }
+        }
+        screen = CinemaServer.get(level.getServer()).ensure(level, helper.absolutePos(relative), state);
         screen.updateTimeline(screen.timeline().play(0));
         java.nio.file.Path folder = null;
         try {
@@ -112,7 +143,7 @@ public final class CinemaGameTests {
             var store = new SessionStore(folder.resolve("sessions.dat"));
             store.save(List.of(screen), 5000);
             var restored = store.load(50_000).getFirst();
-            helper.assertTrue(restored.id().equals(screen.id()) && restored.width() == 12 && restored.height() == 7, "Screen identity and dimensions survive persistence");
+            helper.assertTrue(restored.id().equals(screen.id()) && restored.width() == 3 && restored.height() == 2, "Connected screen identity and dimensions survive persistence");
             helper.assertTrue(!restored.timeline().playing() && restored.timeline().positionAt(90_000) == 5000, "Restart restores paused playback");
         } catch (IOException error) { throw new IllegalStateException(error); }
         finally {
@@ -135,15 +166,18 @@ public final class CinemaGameTests {
         player.setPos(pos.getX() + .5, pos.getY() + .5, pos.getZ() + .5);
         player.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
         player.setItemInHand(InteractionHand.OFF_HAND, ItemStack.EMPTY);
-        var resize = new Payloads.Control(screen.id(), screen.revision(), Payloads.Action.RESIZE, "", 0, 8, 6);
-        helper.assertTrue(rejected(() -> service.applyControl(player, resize)), "No remote means no controls");
+        var loop = new Payloads.Control(screen.id(), screen.revision(), Payloads.Action.LOOP, "", 1, 0, 0);
+        helper.assertTrue(rejected(() -> service.applyControl(player, loop)), "No remote means no controls");
         player.setItemInHand(InteractionHand.OFF_HAND, Cinematic.REMOTE.get().getDefaultInstance());
-        service.applyControl(player, resize);
-        helper.assertTrue(screen.width() == 8, "Offhand remote permits controls");
-        helper.assertTrue(rejected(() -> service.applyControl(player, resize)), "Stale revision rejected");
-        player.setPos(pos.getX() + 17, pos.getY(), pos.getZ());
-        var distant = new Payloads.Control(screen.id(), screen.revision(), Payloads.Action.RESIZE, "", 0, 2, 2);
-        helper.assertTrue(rejected(() -> service.applyControl(player, distant)) && screen.width() == 8, "Distant controls do not mutate the screen");
+        service.applyControl(player, loop);
+        helper.assertTrue(screen.timeline().looping(), "Offhand remote permits controls");
+        helper.assertTrue(rejected(() -> service.applyControl(player, loop)), "Stale revision rejected");
+        player.setPos(pos.getX() + 18, pos.getY(), pos.getZ());
+        var distant = new Payloads.Control(screen.id(), screen.revision(), Payloads.Action.LOOP, "", 0, 0, 0);
+        helper.assertTrue(rejected(() -> service.applyControl(player, distant)) && screen.timeline().looping(), "Distant controls do not mutate the screen");
+        player.setPos(pos.getX() + .5, pos.getY() + .5, pos.getZ() + .5);
+        var resize = new Payloads.Control(screen.id(), screen.revision(), Payloads.Action.RESIZE, "", 0, 8, 6);
+        helper.assertTrue(rejected(() -> service.applyControl(player, resize)) && screen.width() == 1, "Network resize cannot create a virtual screen");
         player.setItemInHand(InteractionHand.OFF_HAND, ItemStack.EMPTY);
         helper.succeed();
     }

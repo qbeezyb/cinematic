@@ -12,7 +12,7 @@ public final class ControlPolicy {
         }
         if (!Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(z)
                 || !screen.key().dimension().equals(dimension)
-                || screen.key().distanceSquared(x, y, z) > MAX_DISTANCE * MAX_DISTANCE) {
+                || screen.distanceSquared(x, y, z) > MAX_DISTANCE * MAX_DISTANCE) {
             throw new IllegalArgumentException("Move within 16 blocks of this screen in the same dimension");
         }
         if (expectedRevision != screen.revision()) {

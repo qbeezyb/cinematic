@@ -2,14 +2,16 @@
 
 Shared cinema screens for Minecraft Java **26.3** and **NeoForge 26.3.0.95**. Install the same mod on the server and every viewing client. Singleplayer runs the media service locally. A separate VLC or FFmpeg installation is not needed.
 
-**Status:** main and test sources compile against the cached NeoForge 26.3.0.95 APIs. Sixteen JUnit tests pass, including native WAV/MP4 decoding and seeking on macOS ARM64; one live HTTP test is blocked by sandbox restrictions. A complete Gradle build, packaged FML startup, rendering, sound, multiplayer, and the platform matrix remain unverified. See [verification results](docs/verification.md).
+**Status:** main and test sources compile against the cached NeoForge 26.3.0.95 APIs. Twenty-five JUnit tests pass, including native WAV/MP4/MKV decoding and seeking on macOS ARM64; one live HTTP test is blocked by sandbox restrictions. A complete Gradle build, packaged FML startup, rendering, sound, multiplayer, and the platform matrix remain unverified. See [verification results](docs/verification.md).
 
 ## Play
 
 1. Put media in `cinematic/media/` beneath the server's working directory, or the singleplayer game directory. Subdirectories are supported. Run `/cinematic reload` as an operator after adding or replacing files; startup also scans automatically.
-2. Craft a **Screen Controller** with glass in the center and eight black concrete blocks around it. Craft a **Remote** from an iron ingot, redstone, and a stone button, in any arrangement. Both items also appear in the Cinematic creative tab.
-3. Place the controller facing the viewers. It starts at 1×1 blocks. Only the controller is a physical block; the panel extends upward and to the viewer's right.
-4. Right-click the controller. Hold a Remote in either hand, within 16 blocks of the controller, to choose media, play/pause, stop, seek, skip ten seconds, loop, or change width and height independently from 1 to 40 blocks.
+2. Craft a **Screen Block** with glass in the center and eight black concrete blocks around it. Craft a **Remote** from an iron ingot, redstone, and a stone button, in any arrangement. Both items also appear in the Cinematic creative tab.
+3. Place Screen Blocks in a flat, filled rectangle facing the viewers. Touching blocks facing the same direction automatically form one screen, up to 40×40 blocks per panel. Blocks placed against an existing Screen Block inherit its facing. Every tile is a physical block; add or remove tiles to resize. Walls with gaps split into smaller filled panels until the gaps are filled.
+4. Right-click any block in the screen. Hold a Remote in either hand within 16 blocks of the wall to choose media, play/pause, stop, seek, skip ten seconds, or loop. The interface shows the wall’s dimensions. After selecting media, press **Play**; selection initially pauses on a preview.
+
+Growing a screen preserves its selected media and timeline. When selected screens merge, an actively playing screen takes priority. Separate facing directions and parallel walls stay independent. Existing controller items keep their registry ID and recipe; old virtual panels resize to the physical blocks present when their chunks load.
 
 Every viewer can set personal volume and mute without a Remote. These settings persist per server and screen. Master and Jukebox/Note Blocks sound settings also apply. Sound is positioned at the panel center and fades over 64 blocks by default. Keyboard focus, arrow-key sliders, native Minecraft widgets, and tooltips are supported. Audio-only files show their filename and progress on the panel.
 
@@ -54,10 +56,12 @@ For a dependency-cached, socket-restricted environment:
 ```sh
 export JAVA_HOME=/path/to/jdk-25
 python3 scripts/test-offline.py
+# Also run the decoder and native tests if build/embedded contains the media jars:
+python3 scripts/test-offline.py --media
 "$JAVA_HOME/bin/java" scripts/CheckJavaSyntax.java
 ```
 
-The offline runner needs cached JUnit 6.0.3 artifacts and intentionally excludes native media tests. The syntax check parses Java without type checking. Neither replaces `./gradlew build`.
+The offline runner needs cached JUnit 6.0.3 artifacts. Its default run excludes native media tests; `--media` includes decoder regressions and generated MKV/WAV/MP4 fixtures using the three existing `build/embedded/` JARs. The syntax check parses Java without type checking. Neither replaces `./gradlew build`.
 
 ## Implementation and limits
 

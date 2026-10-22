@@ -14,7 +14,9 @@ public final class ScreenBlockEntity extends BlockEntity {
         super.onLoad();
         if (level instanceof ServerLevel serverLevel) {
             var service = CinemaServer.get(serverLevel.getServer());
-            if (service != null) { service.ensure(serverLevel, worldPosition, getBlockState()); }
+            if (service != null) {
+                service.blockLoaded(serverLevel, worldPosition, getBlockState().getValue(ScreenControllerBlock.FACING).get2DDataValue());
+            }
         }
     }
 }

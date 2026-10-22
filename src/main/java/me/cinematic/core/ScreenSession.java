@@ -5,7 +5,7 @@ import java.util.UUID;
 /** Owned by the server thread, independent of the controller's chunk lifecycle. */
 public final class ScreenSession {
     private final UUID id;
-    private final ScreenKey key;
+    private ScreenKey key;
     private final int facing;
     private int width;
     private int height;
@@ -44,6 +44,18 @@ public final class ScreenSession {
         this.width = width;
         this.height = height;
         revision++;
+    }
+
+    public void reshape(ScreenKey origin, int width, int height) {
+        validateDimensions(width, height);
+        if (!key.equals(origin) || this.width != width || this.height != height) {
+            key = origin;
+            resize(width, height);
+        }
+    }
+
+    public double distanceSquared(double x, double y, double z) {
+        return PanelGeometry.distanceSquared(key, facing, width, height, x, y, z);
     }
 
     public void select(String mediaId, long durationMs, long nowMs) {

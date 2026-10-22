@@ -42,8 +42,8 @@ class TimelineTest {
 
     @Test void permissionsRequireHandDistanceDimensionAndExactRevision() {
         ScreenSession screen = new ScreenSession(UUID.randomUUID(), new ScreenKey("minecraft:overworld", 0, 0, 0), 0);
-        assertDoesNotThrow(() -> ControlPolicy.check(screen, "minecraft:overworld", 16.5, .5, .5, true, 0));
-        assertThrows(IllegalArgumentException.class, () -> ControlPolicy.check(screen, "minecraft:overworld", 16.51, .5, .5, true, 0));
+        assertDoesNotThrow(() -> ControlPolicy.check(screen, "minecraft:overworld", 17, .5, .5, true, 0));
+        assertThrows(IllegalArgumentException.class, () -> ControlPolicy.check(screen, "minecraft:overworld", 17.01, .5, .5, true, 0));
         assertThrows(IllegalArgumentException.class, () -> ControlPolicy.check(screen, "minecraft:the_nether", .5, .5, .5, true, 0));
         assertThrows(IllegalArgumentException.class, () -> ControlPolicy.check(screen, "minecraft:overworld", .5, .5, .5, false, 0));
         assertThrows(IllegalArgumentException.class, () -> ControlPolicy.check(screen, "minecraft:overworld", .5, .5, .5, true, 1));

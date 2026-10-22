@@ -76,6 +76,8 @@ public final class ScreenRenderer implements BlockEntityRenderer<ScreenBlockEnti
 
     @Override public void submit(State state, PoseStack poses, SubmitNodeCollector collector, CameraRenderState camera) {
         var screen = state.screen;
+        // Only the shared panel's origin renders; its other physical blocks have no entry.
+        if (screen == null) { return; }
         int width = screen == null ? 1 : screen.width();
         int height = screen == null ? 1 : screen.height();
         int facing = screen == null ? state.facing : screen.facing();
